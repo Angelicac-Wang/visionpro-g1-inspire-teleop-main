@@ -1228,12 +1228,14 @@ def parse_args():
     parser.add_argument("--loco-velocity-gain", type=float, default=1.0)
     parser.add_argument("--loco-yaw-gain", type=float, default=0.9)
     parser.add_argument("--loco-forward-scale", type=float, default=1.0)
-    parser.add_argument("--loco-lateral-scale", type=float, default=0.85)
+    parser.add_argument("--loco-lateral-scale", type=float, default=1.15)
+    parser.add_argument("--loco-lateral-displacement-gain", type=float, default=2.5)
+    parser.add_argument("--loco-lateral-deadzone", type=float, default=0.04)
     parser.add_argument("--loco-sign-x", type=float, default=1.0)
     parser.add_argument("--loco-sign-y", type=float, default=1.0)
     parser.add_argument("--loco-max-speed", type=float, default=0.45)
     parser.add_argument("--loco-max-yaw-rate", type=float, default=0.35)
-    parser.add_argument("--loco-velocity-deadzone", type=float, default=0.10)
+    parser.add_argument("--loco-velocity-deadzone", type=float, default=0.07)
     parser.add_argument("--loco-yaw-deadzone", type=float, default=0.15)
     parser.add_argument("--loco-smooth", type=float, default=0.12)
     parser.add_argument("--loco-facing-smooth", type=float, default=0.22)
@@ -1338,6 +1340,8 @@ def main():
         yaw_rate_gain=args.loco_yaw_gain,
         forward_scale=args.loco_forward_scale,
         lateral_scale=args.loco_lateral_scale,
+        lateral_displacement_gain=args.loco_lateral_displacement_gain,
+        lateral_velocity_deadzone=args.loco_lateral_deadzone,
         sign_x=args.loco_sign_x,
         sign_y=args.loco_sign_y,
         max_speed=args.loco_max_speed,
@@ -1350,6 +1354,7 @@ def main():
         idle_decay=args.loco_idle_decay,
     )
     head_loco_calib_pos = None
+    head_loco_calib_rot = None
     last_head_loco_time = None
     stand_hold = True
     policy_started = False
@@ -1411,6 +1416,7 @@ def main():
                             policy_started = True
                         stand_hold = False
                         head_loco_calib_pos = None
+                        head_loco_calib_rot = None
                         calib_yaw = None
                         if tracking is not None and tracking.head is not None:
                             hp = head_pose_from_tracking(tracking)
@@ -1419,7 +1425,7 @@ def main():
                         reset_head_locomotion_state(head_loco_state, calib_yaw=calib_yaw)
                         msg = "Teleop enabled: AVP hands drive upper body."
                         if args.head_locomotion:
-                            msg += " Forward/back = lean head; turn head first to change walk direction."
+                            msg += " Forward/back = lean head; strafe = shift head left/right; turn head to change direction."
                         else:
                             msg += " Use WASD in this terminal to walk."
                         print(f"\n{msg}")
@@ -1474,6 +1480,7 @@ def main():
                     if head_pose is not None:
                         if head_loco_calib_pos is None:
                             head_loco_calib_pos = head_pose[:3, 3].copy()
+                            head_loco_calib_rot = head_pose[:3, :3].copy()
                             head_loco_state.calib_yaw = yaw_from_rot(head_pose[:3, :3])
                             head_loco_state.facing_angle = 0.0
                             print(
@@ -1489,6 +1496,7 @@ def main():
                             head_loco_cfg,
                             loop_dt,
                             calib_pos=head_loco_calib_pos,
+                            calib_rot=head_loco_calib_rot,
                             locomotion_mode=args.loco_mode,
                         )
                         state.mode = planner_cmd.mode
@@ -1515,6 +1523,7 @@ def main():
                     else:
                         official_calibration = captured
                         head_loco_calib_pos = None
+                        head_loco_calib_rot = None
                         calib_yaw = None
                         if tracking is not None and tracking.head is not None:
                             hp = head_pose_from_tracking(tracking)
@@ -1709,10 +1718,12 @@ def main():
                                 )
                         if args.head_locomotion and head_loco_state.debug:
                             print(
-                                "head_loco delta_local=",
-                                head_loco_state.debug.get("delta_local"),
+                                "head_loco delta_body=",
+                                head_loco_state.debug.get("delta_body"),
                                 "cmd=",
                                 head_loco_state.debug.get("cmd"),
+                                "strafe=",
+                                head_loco_state.debug.get("strafe_intent"),
                             )
                         for line in hand_debug_lines:
                             print(line)

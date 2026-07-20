@@ -23,16 +23,23 @@ class HeadLocomotionConfig:
     velocity_gain: float = 1.0
     yaw_rate_gain: float = 0.9
     forward_scale: float = 1.0
-    lateral_scale: float = 0.85
+    lateral_scale: float = 1.15
     sign_x: float = 1.0
     sign_y: float = 1.0
     max_speed: float = 0.45
     max_yaw_rate: float = 0.35
-    velocity_deadzone: float = 0.10
+    velocity_deadzone: float = 0.07
+    lateral_velocity_deadzone: float = 0.04
+    lateral_displacement_gain: float = 1.8
+    max_lateral_displacement: float = 0.12
+    lateral_axis_ratio: float = 0.45
+    lateral_strafe_min: float = 0.012
+    lateral_coupling_suppress: float = 0.055
     yaw_rate_deadzone: float = 0.15
     smooth_alpha: float = 0.12
     facing_smooth_alpha: float = 0.2
     output_deadzone: float = 0.04
+    lateral_output_deadzone: float = 0.025
     idle_decay: float = 0.85
 
 
@@ -76,6 +83,17 @@ def head_delta_yaw_compensated(head_pose: np.ndarray, calib_pos: np.ndarray) -> 
     return rotation_z(-head_yaw) @ delta_world
 
 
+def head_delta_calib_frame(
+    head_pose: np.ndarray,
+    calib_pos: np.ndarray,
+    calib_rot: np.ndarray,
+) -> np.ndarray:
+    """Head displacement in the calibrated head frame (x=lateral, z=forward/back)."""
+    delta_world = head_pose[:3, 3] - calib_pos
+    rot = np.asarray(calib_rot, dtype=np.float64)[:3, :3]
+    return rot.T @ delta_world
+
+
 def compute_head_locomotion_velocity(
     head_pose: np.ndarray,
     state: HeadLocomotionState,
@@ -83,6 +101,7 @@ def compute_head_locomotion_velocity(
     dt: float,
     *,
     calib_pos: np.ndarray,
+    calib_rot: np.ndarray | None = None,
 ) -> tuple[float, float, float]:
     """Return (vx, vy, vyaw) in robot-base frame from head motion derivative."""
     pos = head_pose[:3, 3]
@@ -93,8 +112,9 @@ def compute_head_locomotion_velocity(
         state.prev_head_yaw = yaw
         state.calibrated = True
         state.debug = {
-            "delta_local": [0.0, 0.0, 0.0],
+            "delta_body": [0.0, 0.0, 0.0],
             "raw_vel": [0.0, 0.0],
+            "vy_disp": 0.0,
             "raw_vyaw": 0.0,
         }
         return 0.0, 0.0, 0.0
@@ -105,13 +125,38 @@ def compute_head_locomotion_velocity(
     state.prev_head_yaw = yaw
 
     vel_local = rotation_z(-yaw) @ vel_world
-    vx = cfg.velocity_gain * cfg.forward_scale * cfg.sign_x * vel_local[0]
-    vy = cfg.velocity_gain * cfg.lateral_scale * cfg.sign_y * vel_local[1]
+    vx = cfg.velocity_gain * cfg.forward_scale * cfg.sign_x * float(vel_local[0])
+    vy = cfg.velocity_gain * cfg.lateral_scale * cfg.sign_y * float(vel_local[1])
+    vy_disp = 0.0
+    lat_disp = 0.0
+    strafe_intent = False
+
+    if calib_rot is not None:
+        delta_body = head_delta_calib_frame(head_pose, calib_pos, calib_rot)
+        lat_disp = float(np.clip(delta_body[0], -cfg.max_lateral_displacement, cfg.max_lateral_displacement))
+        fwd_disp = abs(float(delta_body[2]))
+        strafe_intent = abs(lat_disp) >= max(cfg.lateral_strafe_min, fwd_disp * cfg.lateral_axis_ratio)
+        if strafe_intent:
+            vy_disp = cfg.lateral_displacement_gain * cfg.sign_y * lat_disp
+            vy += vy_disp
+    else:
+        delta_body = head_delta_yaw_compensated(head_pose, calib_pos)
+
+    # Drop weak lateral coupling during forward/back, but keep strafe when head shifts sideways.
+    if (
+        not strafe_intent
+        and abs(vx) >= cfg.velocity_deadzone
+        and abs(vy) < cfg.lateral_coupling_suppress
+    ):
+        vy = 0.0
+
     vyaw = cfg.yaw_rate_gain * yaw_rate
 
-    speed = float(np.hypot(vx, vy))
-    if speed < cfg.velocity_deadzone:
-        vx, vy = 0.0, 0.0
+    if abs(vx) < cfg.velocity_deadzone:
+        vx = 0.0
+    lat_dz = cfg.lateral_velocity_deadzone
+    if abs(vy) < lat_dz:
+        vy = 0.0
     if abs(vyaw) < cfg.yaw_rate_deadzone:
         vyaw = 0.0
 
@@ -132,20 +177,25 @@ def compute_head_locomotion_velocity(
     out_vyaw = float(np.clip(state.smooth_vyaw, -cfg.max_yaw_rate, cfg.max_yaw_rate))
 
     out_dz = float(getattr(cfg, "output_deadzone", cfg.velocity_deadzone))
-    if float(np.hypot(out_vx, out_vy)) < out_dz:
-        out_vx, out_vy = 0.0, 0.0
+    lat_out_dz = float(getattr(cfg, "lateral_output_deadzone", out_dz))
+    if abs(out_vx) < out_dz:
+        out_vx = 0.0
         state.smooth_vx = 0.0
+    if abs(out_vy) < lat_out_dz:
+        out_vy = 0.0
         state.smooth_vy = 0.0
     if abs(out_vyaw) < out_dz:
         out_vyaw = 0.0
         state.smooth_vyaw = 0.0
 
-    delta_local = head_delta_yaw_compensated(head_pose, calib_pos)
     state.debug = {
-        "delta_local": np.round(delta_local, 3).tolist(),
+        "delta_body": np.round(delta_body, 3).tolist(),
         "raw_vel": np.round([vx, vy], 3).tolist(),
+        "vy_disp": round(vy_disp, 3),
         "raw_vyaw": round(float(yaw_rate), 3),
         "cmd": np.round([out_vx, out_vy, out_vyaw], 3).tolist(),
+        "lat_disp": round(lat_disp, 3),
+        "strafe_intent": strafe_intent,
         "sign": [cfg.sign_x, cfg.sign_y],
     }
     return out_vx, out_vy, out_vyaw
@@ -158,6 +208,7 @@ def compute_sonic_planner_command(
     dt: float,
     *,
     calib_pos: np.ndarray,
+    calib_rot: np.ndarray | None = None,
     locomotion_mode: int = 1,
 ) -> SonicPlannerCommand:
     """Map head motion to SONIC planner movement/facing vectors.
@@ -187,22 +238,25 @@ def compute_sonic_planner_command(
         cfg,
         dt,
         calib_pos=calib_pos,
+        calib_rot=calib_rot,
     )
 
-    # vx/vy are in head-local frame; convert to world/robot frame for planner movement.
     cos_y = np.cos(head_yaw)
     sin_y = np.sin(head_yaw)
     wx = cos_y * vx - sin_y * vy
     wy = sin_y * vx + cos_y * vy
-    speed = float(np.hypot(wx, wy))
+    local_speed = float(np.hypot(vx, vy))
+    lat_dz = float(getattr(cfg, "lateral_velocity_deadzone", cfg.velocity_deadzone))
 
-    if speed >= cfg.velocity_deadzone:
-        movement = np.array([wx / speed, wy / speed, 0.0], dtype=np.float64)
+    forward_active = abs(vx) >= cfg.velocity_deadzone
+    lateral_active = abs(vy) >= lat_dz
+    if (forward_active or lateral_active) and local_speed > 1e-6:
+        movement = np.array([wx / local_speed, wy / local_speed, 0.0], dtype=np.float64)
         return SonicPlannerCommand(
             mode=locomotion_mode,
             movement=movement,
             facing=facing,
-            speed=min(speed, cfg.max_speed),
+            speed=min(local_speed, cfg.max_speed),
         )
 
     return idle

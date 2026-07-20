@@ -176,4 +176,4 @@ Three-terminal sim2sim using [GR00T-WholeBodyControl](https://github.com/NVIDIA/
 ```
 
 Operator flow: calibrate (`c`) → stand-hold (`]`) → teleop + head walk (`T`).  
-See [command.txt](command.txt) for tuning flags (e.g. `--loco-velocity-deadzone 0.07`).
+See [command.txt](command.txt) for tuning flags (default `--loco-velocity-deadzone` is 0.07).
