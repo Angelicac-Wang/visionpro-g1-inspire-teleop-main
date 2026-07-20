@@ -1,0 +1,44 @@
+# Head camera configuration for Isaac Sim teleop
+head_camera:
+  enable_zmq: true
+  zmq_port: 55555
+  # Official default: WebRTC on 60001, then immersive VR on 8012.
+  enable_webrtc: true
+  webrtc_port: 60001
+  webrtc_codec: h264
+  type: isaacsim
+  # Monocular head camera from Isaac sim is 640 wide (1280 = left+right binocular).
+  image_shape: [480, 640]
+  binocular: false
+  fps: 30
+  video_id: null
+  serial_number: null
+  physical_path: null
+
+left_wrist_camera:
+  enable_zmq: true
+  zmq_port: 55556
+  enable_webrtc: true
+  webrtc_port: 60002
+  webrtc_codec: h264
+  type: isaacsim
+  image_shape: [480, 640]
+  binocular: false
+  fps: 30
+  video_id: null
+  serial_number: null
+  physical_path: null
+
+right_wrist_camera:
+  enable_zmq: true
+  zmq_port: 55557
+  enable_webrtc: true
+  webrtc_port: 60003
+  webrtc_codec: h264
+  type: isaacsim
+  image_shape: [480, 640]
+  binocular: false
+  fps: 30
+  video_id: null
+  serial_number: null
+  physical_path: null

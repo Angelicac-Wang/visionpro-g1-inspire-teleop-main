@@ -1,0 +1,216 @@
+# Vision Pro XR Sim Teleop
+
+## SONIC whole-body (recommended for stable walking) — NOT Isaac
+
+Uses GEAR-SONIC in /mnt/newssd/GR00T-WholeBodyControl (MuJoCo + legged policy).
+Your AVP bridge: scripts/g1_avp_sonic_teleop.py -> ZMQ :5556 -> deploy zmq_manager.
+
+Three terminals (sim2sim):
+
+  One-time if ./run_sonic_sim_loop.sh says venv missing/broken:
+    ./scripts/setup_sonic_sim_venv.sh
+
+  Terminal 1:  ./run_sonic_sim_loop.sh
+  Terminal 2:  ./run_sonic_deploy.sh
+               (uses prebuilt g1_deploy_onnx_ref; skips rebuild if /mnt/newssd build/ not writable)
+               wait for "Init done"; emergency stop = O in this terminal
+  Terminal 3:  ./run_sonic_avp_teleop.sh 192.168.2.14
+
+Vision Pro: Tracking Streamer app -> Start (same Wi-Fi).
+
+Operator flow (Terminal 3):
+  1) Wait for AVP head tracking
+  2) Press c, hold neutral hand pose ~1.5s (official-calib)
+  3) Move head to walk/turn (head-locomotion ON by default)
+  4) Move hands for upper body (vr 3-point: head + 2 wrists)
+
+Real robot (no MuJoCo sim loop):
+  Terminal 1: ./run_sonic_deploy.sh real
+  Terminal 2: ./run_sonic_avp_teleop.sh <VP_IP>
+
+Official PICO 3-point whole-body (if you have PICO hardware):
+  See GR00T docs: docs/source/tutorials/vr_wholebody_teleop.md
+  Terminal 3: pico_manager_thread_server.py --manager --vis_vr3pt
+  Mode VR_3PT = planner locomotion + head + 2 hands (same ZMQ vr_position idea)
+
+Python env: use inspire_clean (has pyzmq), NOT system python3:
+  /mnt/newssd/conda_envs/inspire_clean/bin/python scripts/g1_avp_sonic_teleop.py ...
+
+---
+
+## Isaac Sim whole-body (harder to tune; separate stack)
+
+## Terminal 1
+./run_sim_xr_teleop.sh
+
+Wait for:
+  ========= create dds success =========
+  ========= create image server success =========
+  ========= start controller success =========
+
+Then click once inside the Isaac window.
+
+## Terminal 2
+./run_xr_teleop.sh
+
+## Vision Pro certificate (do this once — covers BOTH 60001 and 8012)
+
+8012 does NOT need its own certificate. TeleVuer (8012) and teleimager (60001)
+share the same files:
+  ~/.config/xr_teleoperate/cert.pem
+  ~/.config/xr_teleoperate/key.pem
+Both are signed by the same root CA:
+  ~/.config/xr_teleoperate/rootCA.pem
+
+Safari on Vision Pro often only shows "Untrusted" with no approve button.
+You must install the root certificate on Vision Pro:
+
+  1) On PC, generate certs (only if not done yet):
+     ./scripts/setup_vp_certs.sh
+
+  2) AirDrop to Vision Pro:
+     rootCA-for-visionpro.pem
+     (same file as ~/.config/xr_teleoperate/rootCA.pem)
+
+  3) On Vision Pro:
+     open the file -> Install Profile
+
+  4) Settings -> General -> About -> Certificate Trust Settings
+     enable full trust for "xr-teleoperate-local"
+
+  5) Restart Safari
+
+  6) First visit EACH URL once and tap Advanced -> Proceed:
+     https://192.168.2.32:60001   (REQUIRED: this is the sim video source)
+     https://192.168.2.32:8012/?ws=wss://192.168.2.32:8012   (required)
+
+How to tell cert is OK for 8012:
+  - Safari opens the Vuer page (Virtual Reality button visible), OR
+  - In VR you see colored hand tracking lines (WSS already connected)
+
+The image (sim picture) vs the tracking lines are TWO separate things:
+  - hand lines + grid  = 8012 websocket OK (this already works for you)
+  - sim camera picture = comes from the 60001 WebRTC stream (default mode)
+  So if you see grid+hands but no picture, the VIDEO stream is the missing part,
+  NOT the certificate.
+
+## Diagnose camera (Terminal 1 must be running)
+  /mnt/newssd/conda_envs/tv/bin/python scripts/diag_camera_stream.py 192.168.2.32
+  Must print: OK: ZMQ stream alive
+
+## Vision Pro NATIVE app (Tracking Streamer) — recommended for pose + HEAD_LOCO
+  Install "Tracking Streamer" from the App Store (VisionProTeleop project).
+  No Safari / 8012 / certificate needed for tracking.
+
+  Terminal 1: ./run_sim_wholebody.sh   (or ./run_sim_xr_teleop.sh for arms only)
+  Terminal 2: ./run_xr_teleop_avp_native.sh <VP_IP_or_room_code>
+
+  Same Wi‑Fi (simplest):
+    - Open Tracking Streamer on VP -> Start
+    - Use VP IP: ./run_xr_teleop_avp_native.sh 192.168.2.xx
+
+  Cross-network (room code):
+    - VP app: Cross-Network ON -> note code (e.g. MLBS-4109)
+    - PC: ./run_xr_teleop_avp_native.sh MLBS-4109
+
+  Head-driven walking (wholebody sim only):
+    XR_HEAD_LOCO=1 ./run_xr_teleop_avp_native.sh 192.168.2.xx
+    Default HEAD_LOCO_MODE=velocity: head motion speed -> walk (work-master style).
+    Legs use Isaac policy.onnx inside sim — NOT SONIC (SONIC = avp_to_sonic_zmq.py only).
+    After [r]: hold still 2.5s calibrate, then shift head forward/side slowly.
+
+  Reset after robot falls (no need to restart sim, if Terminal 1 uses ./run_sim_wholebody.sh):
+    In teleop Terminal 2: press [b]
+    Or from any terminal: ./scripts/sim_reset_scene.py
+    Terminal 1 should print "reset all". Then press [r] again in teleop.
+    NOTE: restart Terminal 1 once after updating launch_sim_main (fall reset patch).
+
+  Success logs:
+    [avp_native] Tracking live (head det=1.000 ...)
+    [xr_launcher] loco [head/MOVE] ...   (with XR_HEAD_LOCO=1)
+
+## Vision Pro (Safari) — legacy WebXR path
+
+Step A - warm up the sim video stream (REQUIRED to see the picture):
+  https://192.168.2.32:60001
+  Advanced -> Proceed -> Start
+  You should see the sim camera image, not black.
+  Then CLOSE this 60001 tab.
+
+Step B - XR teleop:
+  https://192.168.2.32:8012/?ws=wss://192.168.2.32:8012
+  Advanced -> Proceed -> Virtual Reality
+
+Step C - on PC terminal 2:
+  press r
+
+## What is normal
+- grid + colored hand lines in VR = WebXR + hand tracking OK
+- sim picture filling view = WebRTC video OK (requires Step A done first)
+- Blue/green/red lines = your hands, not robot hands
+- Watch the Isaac window on PC to see the whole robot move
+
+## If VR shows grid + hands but NO sim picture
+This means WebXR works but the video plane is not rendering. Try, in order:
+  1) Redo Step A (open 60001, Start, SEE image, close tab), re-enter VR
+  2) DISPLAY_MODE=ego ./run_xr_teleop.sh   (smaller video window)
+  3) XR_VIDEO_MODE=zmq ./run_xr_teleop.sh  (JPEG over 8012; often still black on AVP)
+Fallback that always works: keep the 60001 tab open to watch the sim camera in 2D,
+hand tracking still drives the robot (watch full robot on the PC Isaac window).
+
+## ========== WHOLE-BODY (arms + legs / walking) ==========
+# The PickPlace tasks lock the legs. The "Wholebody" task runs Unitree RL walking
+# policy (assets/model/policy.onnx) in sim — NOT SONIC. SONIC is a separate
+# stack (scripts/avp_to_sonic_zmq.py). Walking is commanded via DDS topic
+#   rt/run_command/cmd  ->  string "[vx, vy, vyaw, height]"  (default [0,0,0,0.8])
+
+## Step 1 - confirm legs walk (NO Vision Pro needed)
+Terminal 1:
+  ./run_sim_wholebody.sh
+  Wait for create dds / start controller success, then click the Isaac window.
+  Robot should stand and balance on its own.
+Terminal 2 (must be a separate terminal, NOT run_xr_teleop.sh):
+  ./scripts/wholebody_walk_test.py
+  Click terminal 2, HOLD w (not tap). Watch Isaac window for walking.
+  If you see "shared memory not found", RESTART terminal 1 first (sim must reload).
+
+Controls: w/s fwd/back, a/d strafe, z/x turn, space stop, q quit.
+NOTE: q quits the walk script (not w). Hold keys — release to coast to stop.
+
+## Step 2 - RECOMMENDED on Vision Pro Safari (arms in VR + keyboard legs)
+  Terminal 1: ./run_sim_wholebody.sh
+  Terminal 2: ./run_step2_wholebody.sh   (or ./run_xr_teleop.sh)
+  Terminal 3: ./scripts/wholebody_walk_test.py
+  AVP: 8012 VR for arms. PC Terminal 3: HOLD w/a/z/x for legs.
+  This works even when AVP Safari sends no pose data to the PC.
+
+## Step 3 - AVP head/hand loco (native app recommended)
+  XR_HEAD_LOCO=1 ./run_xr_teleop_avp_native.sh <VP_IP>
+  Lean gently; defaults capped at v_lin=0.12. Press [b] in teleop to reset after fall.
+
+## Reset sim (robot fell over)
+  Do NOT need to restart ./run_sim_wholebody.sh every time.
+  Option A — teleop terminal: press [b]  (sim mode only)
+  Option B — any terminal: ./scripts/sim_reset_scene.py
+  Option C — object only: ./scripts/sim_reset_scene.py --category 1
+  Isaac Sim window itself has no built-in "reset robot" hotkey for this task.
+  PickPlace tasks: category 2 = full scene; Wholebody: category 2 = full scene
+  (after one restart of Terminal 1 with the updated launcher).
+
+## Step 3 (Safari) - often broken
+  XR_HEAD_LOCO=1 ./run_xr_teleop.sh
+  Only works if pose data reaches the PC. Quick check after [r]:
+    - Do Isaac robot ARMS move when you move VP hands?  YES -> hand-loco may work
+    - Arms stay still?  NO pose stream -> use Step 2 instead (not a connection bug)
+  AVP Safari limitation: head matrix det=0, hand0=[0,0,0] is common.
+
+Note: head-loco only works with a Wholebody task in Terminal 1. On a PickPlace
+task the command is ignored (legs are locked).
+
+## Quit
+Terminal 2: q
+
+## Troubleshooting black VR view
+If terminal 2 shows shape mismatch (480,640) vs (480,1280):
+  - head camera config must be image_shape: [480, 640] for monocular sim
+  - restart Terminal 1 after changing config/cam_config_server.yaml
