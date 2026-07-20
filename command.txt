@@ -1,5 +1,28 @@
 # Vision Pro XR Sim Teleop
 
+## SONIC pick-up in MuJoCo (table + cube)
+
+Walk with head, reach with AVP hands, pinch to grasp (physics contact).
+
+Three terminals:
+
+  Terminal 1:  ./run_sonic_sim_loop_pnp.sh
+  Terminal 2:  ./run_sonic_deploy.sh
+  Terminal 3:  ./run_sonic_avp_teleop_pick.sh 192.168.2.14
+
+First run of Terminal 1 symlinks G1 meshes into assets/mujoco/g1_runtime/ (auto).
+
+Operator:
+  c -> ] (press 9 in MuJoCo if needed) -> T
+  Lean head forward to walk to the cyan cube on the table (~0.5 m ahead)
+  Move AVP hands to the cube, pinch fingers to close Inspire gripper in sim
+  Grasp is MuJoCo friction contact only (no magnetic attach)
+
+To regenerate scene only:
+  ./scripts/generate_pnp_scene.py
+
+---
+
 ## SONIC whole-body (recommended for stable walking) — NOT Isaac
 
 Uses GEAR-SONIC in /mnt/newssd/GR00T-WholeBodyControl (MuJoCo + legged policy).

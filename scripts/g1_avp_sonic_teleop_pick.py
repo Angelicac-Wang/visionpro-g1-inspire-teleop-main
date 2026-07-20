@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""AVP -> SONIC bridge for sim pick-up: hands + head locomotion enabled."""
+
+from __future__ import annotations
+
+import runpy
+import sys
+from pathlib import Path
+
+BRIDGE = Path(__file__).resolve().parent / "avp_to_sonic_zmq.py"
+
+
+def main() -> None:
+    if not BRIDGE.exists():
+        raise SystemExit(f"SONIC bridge not found: {BRIDGE}")
+
+    argv = list(sys.argv)
+    if "--active-hands" not in argv:
+        argv.extend(["--active-hands", "both"])
+    if "--auto-start" not in argv and "--no-auto-start" not in argv:
+        argv.append("--no-auto-start")
+    if "--head-locomotion" not in argv:
+        argv.append("--head-locomotion")
+    if "--enable-inspire-hand-sim" not in argv:
+        argv.append("--enable-inspire-hand-sim")
+
+    sys.argv = argv
+    print(f"[g1_avp_sonic_teleop_pick] Running {BRIDGE}")
+    print("[g1_avp_sonic_teleop_pick] Inspire finger ZMQ -> MuJoCo sim (grasp via contact)")
+    print("[g1_avp_sonic_teleop_pick] Flow: c -> ] -> T -> walk to cube -> pinch to grasp")
+    runpy.run_path(str(BRIDGE), run_name="__main__")
+
+
+if __name__ == "__main__":
+    main()

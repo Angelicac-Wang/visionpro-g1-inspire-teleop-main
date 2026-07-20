@@ -1,0 +1,50 @@
+<mujoco model="g1_43dof_inspire_hand_pnp_cube scene">
+  <include file="@G1_ROBOT_INCLUDE@"/>
+  <!-- Table + free-joint cube for VP teleop pick-up in SONIC MuJoCo sim. -->
+
+  <statistic center="0.5 0 0.6" extent="2.0"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <texture type="2d" name="table" builtin="flat" rgb1="0.7 0.6 0.5" width="512" height="512"/>
+    <texture type="2d" name="cube" builtin="flat" rgb1="0.3 0.7 0.85" width="512" height="512"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="table" texture="table" texuniform="true" reflectance="0.1"/>
+    <material name="cube" texture="cube" texuniform="true" reflectance="0.1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+    <site name="com_marker" pos="0.1 0 0" size="0.05" rgba="1 0 0 1" type="sphere"/>
+
+    <!-- Table ~0.5 m in front of the robot (pelvis at x=0). Top near z=0.75. -->
+    <body name="table_body" pos="0.52 0 0.35">
+      <geom name="table_top" pos="0 0 0.35" size="0.35 0.55 0.04" type="box" material="table"/>
+      <geom name="table_leg1" pos="0.25 0.45 -0.05" size="0.04 0.04 0.35" type="box" material="table"/>
+      <geom name="table_leg2" pos="0.25 -0.45 -0.05" size="0.04 0.04 0.35" type="box" material="table"/>
+      <geom name="table_leg3" pos="-0.25 0.45 -0.05" size="0.04 0.04 0.35" type="box" material="table"/>
+      <geom name="table_leg4" pos="-0.25 -0.45 -0.05" size="0.04 0.04 0.35" type="box" material="table"/>
+    </body>
+
+    <!-- 7 cm cube on table; free joint for physics grasp via Inspire hand contact. -->
+    <body name="pick_cube_body" pos="0.52 0 0.785">
+      <joint type="free" damping="0.0005" name="pick_cube_joint"/>
+      <geom name="pick_cube" size="0.035 0.035 0.035" type="box" material="cube"
+        density="120" friction="1.0 0.4 0.05" solimp="0.998 0.998 0.001" solref="0.001 2"/>
+      <site name="pick_cube_top" pos="0 0 0.035" size="0.01" rgba="0 1 0 0.4"/>
+    </body>
+  </worldbody>
+
+  <default>
+    <geom friction="1.0"/>
+  </default>
+</mujoco>

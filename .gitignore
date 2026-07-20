@@ -8,4 +8,6 @@ __pycache__/
 *.pem
 scripts/visionpro_right_hand_calibration.json
 visionpro_right_hand_calibration.json
+assets/mujoco/g1_runtime/
+assets/mujoco/generated/
 
