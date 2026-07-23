@@ -14,9 +14,8 @@ First run of Terminal 1 symlinks G1 meshes into assets/mujoco/g1_runtime/ (auto)
 
 Operator:
   c -> ] (press 9 in MuJoCo if needed) -> T
-  Lean head forward to walk to the cyan cube on the table (~0.5 m ahead)
-  Move AVP hands to the cube, pinch fingers to close Inspire gripper in sim
-  Grasp is MuJoCo friction contact only (no magnetic attach)
+  Same arm/wrist mapping as ./run_sonic_avp_teleop.sh (no pick-specific body-scale overrides)
+  Lean head to walk; pinch fingers to grasp (MuJoCo contact only)
 
 To regenerate scene only:
   ./scripts/generate_pnp_scene.py

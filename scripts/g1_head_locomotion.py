@@ -23,17 +23,19 @@ class HeadLocomotionConfig:
     velocity_gain: float = 1.0
     yaw_rate_gain: float = 0.9
     forward_scale: float = 1.0
-    lateral_scale: float = 1.15
+    lateral_scale: float = 1.25
+    lateral_left_scale: float = 1.0
+    lateral_right_scale: float = 1.4
     sign_x: float = 1.0
     sign_y: float = 1.0
     max_speed: float = 0.45
     max_yaw_rate: float = 0.35
     velocity_deadzone: float = 0.07
-    lateral_velocity_deadzone: float = 0.04
-    lateral_displacement_gain: float = 1.8
+    lateral_velocity_deadzone: float = 0.035
+    lateral_displacement_gain: float = 2.2
     max_lateral_displacement: float = 0.12
-    lateral_axis_ratio: float = 0.45
-    lateral_strafe_min: float = 0.012
+    lateral_axis_ratio: float = 0.38
+    lateral_strafe_min: float = 0.010
     lateral_coupling_suppress: float = 0.055
     yaw_rate_deadzone: float = 0.15
     smooth_alpha: float = 0.12
@@ -141,6 +143,11 @@ def compute_head_locomotion_velocity(
             vy += vy_disp
     else:
         delta_body = head_delta_yaw_compensated(head_pose, calib_pos)
+
+    if vy > 0.0:
+        vy *= cfg.lateral_left_scale
+    elif vy < 0.0:
+        vy *= cfg.lateral_right_scale
 
     # Drop weak lateral coupling during forward/back, but keep strafe when head shifts sideways.
     if (

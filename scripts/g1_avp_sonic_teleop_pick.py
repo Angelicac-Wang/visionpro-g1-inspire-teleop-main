@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AVP -> SONIC bridge for sim pick-up: hands + head locomotion enabled."""
+"""AVP -> SONIC bridge for sim pick-up: same defaults as g1_avp_sonic_teleop + finger sim."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def main() -> None:
 
     sys.argv = argv
     print(f"[g1_avp_sonic_teleop_pick] Running {BRIDGE}")
-    print("[g1_avp_sonic_teleop_pick] Inspire finger ZMQ -> MuJoCo sim (grasp via contact)")
+    print("[g1_avp_sonic_teleop_pick] Same arm/wrist defaults as run_sonic_avp_teleop.sh + Inspire finger sim")
     print("[g1_avp_sonic_teleop_pick] Flow: c -> ] -> T -> walk to cube -> pinch to grasp")
     runpy.run_path(str(BRIDGE), run_name="__main__")
 

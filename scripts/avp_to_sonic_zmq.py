@@ -1228,9 +1228,11 @@ def parse_args():
     parser.add_argument("--loco-velocity-gain", type=float, default=1.0)
     parser.add_argument("--loco-yaw-gain", type=float, default=0.9)
     parser.add_argument("--loco-forward-scale", type=float, default=1.0)
-    parser.add_argument("--loco-lateral-scale", type=float, default=1.15)
+    parser.add_argument("--loco-lateral-scale", type=float, default=1.25)
+    parser.add_argument("--loco-lateral-left-scale", type=float, default=1.0)
+    parser.add_argument("--loco-lateral-right-scale", type=float, default=1.4)
     parser.add_argument("--loco-lateral-displacement-gain", type=float, default=2.5)
-    parser.add_argument("--loco-lateral-deadzone", type=float, default=0.04)
+    parser.add_argument("--loco-lateral-deadzone", type=float, default=0.035)
     parser.add_argument("--loco-sign-x", type=float, default=1.0)
     parser.add_argument("--loco-sign-y", type=float, default=1.0)
     parser.add_argument("--loco-max-speed", type=float, default=0.45)
@@ -1340,6 +1342,8 @@ def main():
         yaw_rate_gain=args.loco_yaw_gain,
         forward_scale=args.loco_forward_scale,
         lateral_scale=args.loco_lateral_scale,
+        lateral_left_scale=args.loco_lateral_left_scale,
+        lateral_right_scale=args.loco_lateral_right_scale,
         lateral_displacement_gain=args.loco_lateral_displacement_gain,
         lateral_velocity_deadzone=args.loco_lateral_deadzone,
         sign_x=args.loco_sign_x,

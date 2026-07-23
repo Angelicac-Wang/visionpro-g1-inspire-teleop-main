@@ -32,6 +32,7 @@ fi
 cat <<EOF
 SONIC Terminal 3 — AVP pick-up teleop
   Endpoint: ${AVP_ENDPOINT}
+  Arm/wrist: same defaults as ./run_sonic_avp_teleop.sh (official-calib, calibrated wrist)
   Inspire hand sim: ON (pinch fingers to close gripper in MuJoCo)
   Locomotion: head walk after T
 
@@ -39,9 +40,8 @@ Pick-up flow:
   1) c  — calibrate hands (~1.5 s)
   2) ]  — stand-hold (press 9 in MuJoCo if robot hangs)
   3) T  — teleop on
-  4) Lean head forward to walk toward the cyan cube on the table
-  5) Reach with AVP hands, pinch to grasp (physics contact, no attach constraint)
-  6) Lean back / turn to lift or carry
+  4) Walk to cube, reach, pinch to grasp
+  Optional tuning: pass extra flags after VP IP (same as run_sonic_avp_teleop.sh)
 EOF
 
 cd "${REPO_ROOT}"
