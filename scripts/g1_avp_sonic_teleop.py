@@ -21,11 +21,13 @@ def main() -> None:
         argv.append("--no-auto-start")
     if "--head-locomotion" not in argv:
         argv.append("--head-locomotion")
+    if "--head-height-squat" not in argv and "--no-head-height-squat" not in argv:
+        argv.append("--head-height-squat")
 
     sys.argv = argv
     print(f"[g1_avp_sonic_teleop] Running {BRIDGE}")
-    print("[g1_avp_sonic_teleop] Flow: calibrate (c) -> stand-hold (]) -> teleop + head walk (T)")
-    print("[g1_avp_sonic_teleop] WASD still works in this terminal. Head drive starts only after T.")
+    print("[g1_avp_sonic_teleop] Flow: F -> ] -> S -> T  (CALIB_FULL / ENGAGE / SYNC / TELEOP)")
+    print("[g1_avp_sonic_teleop] Duck/squat follows head height. P=pause, H=head zero, c=alias F")
     runpy.run_path(str(BRIDGE), run_name="__main__")
 
 

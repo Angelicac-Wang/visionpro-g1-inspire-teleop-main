@@ -37,11 +37,9 @@ SONIC Terminal 3 — AVP pick-up teleop
   Locomotion: head walk after T
 
 Pick-up flow:
-  1) c  — calibrate hands (~1.5 s)
-  2) ]  — stand-hold (press 9 in MuJoCo if robot hangs)
-  3) T  — teleop on
-  4) Walk to cube, reach, pinch to grasp
-  Optional tuning: pass extra flags after VP IP (same as run_sonic_avp_teleop.sh)
+  F -> ] -> S -> T  (same staged calib as walk teleop)
+  Walk to cube, reach, pinch to grasp
+  P pause | H head zero | S re-sync anytime | c alias for F
 EOF
 
 cd "${REPO_ROOT}"

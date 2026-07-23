@@ -46,12 +46,30 @@ class HeadLocomotionConfig:
 
 
 @dataclass
+class HeadHeightSquatConfig:
+    """Map AVP head vertical drop to SONIC planner squat/kneel height."""
+
+    walk_height_threshold: float = 0.72
+    squat_height_min: float = 0.50
+    kneel_height_min: float = 0.35
+    head_drop_start: float = 0.06
+    head_drop_to_squat: float = 0.24
+    head_drop_to_kneel: float = 0.42
+    min_height: float = 0.35
+    max_height: float = 0.88
+    smooth_alpha: float = 0.18
+    squat_mode: int = 4
+    kneel_mode: int = 6
+
+
+@dataclass
 class HeadLocomotionState:
     prev_head_pos: np.ndarray | None = None
     prev_head_yaw: float | None = None
     smooth_vx: float = 0.0
     smooth_vy: float = 0.0
     smooth_vyaw: float = 0.0
+    smooth_pelvis_height: float = -1.0
     facing_angle: float = 0.0
     calib_yaw: float = 0.0
     calibrated: bool = False
@@ -269,6 +287,92 @@ def compute_sonic_planner_command(
     return idle
 
 
+def compute_head_pelvis_height(
+    head_pose: np.ndarray,
+    calib_pos: np.ndarray,
+    state: HeadLocomotionState,
+    cfg: HeadHeightSquatConfig,
+) -> tuple[float, dict]:
+    """Return smoothed planner pelvis height. -1 means standing default height."""
+    delta_z = float(head_pose[2, 3] - calib_pos[2])
+    drop = max(0.0, -delta_z - cfg.head_drop_start)
+
+    if drop <= 0.0:
+        raw_height = -1.0
+    elif drop < cfg.head_drop_to_squat:
+        t = drop / max(cfg.head_drop_to_squat, 1e-6)
+        raw_height = cfg.walk_height_threshold - t * (cfg.walk_height_threshold - cfg.squat_height_min)
+    elif drop < cfg.head_drop_to_kneel:
+        t = (drop - cfg.head_drop_to_squat) / max(cfg.head_drop_to_kneel - cfg.head_drop_to_squat, 1e-6)
+        raw_height = cfg.squat_height_min - t * (cfg.squat_height_min - cfg.kneel_height_min)
+    else:
+        raw_height = cfg.kneel_height_min
+
+    alpha = float(np.clip(cfg.smooth_alpha, 0.05, 1.0))
+    if raw_height < 0.0:
+        if state.smooth_pelvis_height >= 0.0:
+            state.smooth_pelvis_height += alpha * (cfg.walk_height_threshold - state.smooth_pelvis_height)
+            if state.smooth_pelvis_height >= cfg.walk_height_threshold - 0.01:
+                state.smooth_pelvis_height = -1.0
+    else:
+        raw_height = float(np.clip(raw_height, cfg.min_height, cfg.max_height))
+        if state.smooth_pelvis_height < 0.0:
+            state.smooth_pelvis_height = raw_height
+        else:
+            state.smooth_pelvis_height += alpha * (raw_height - state.smooth_pelvis_height)
+
+    debug = {
+        "head_delta_z": round(delta_z, 3),
+        "head_drop": round(drop, 3),
+        "pelvis_height": round(state.smooth_pelvis_height, 3),
+    }
+    return state.smooth_pelvis_height, debug
+
+
+def apply_height_to_planner_command(
+    cmd: SonicPlannerCommand,
+    pelvis_height: float,
+    cfg: HeadHeightSquatConfig,
+) -> SonicPlannerCommand:
+    """Merge pelvis height into a locomotion planner command (ROS2 teleop rules)."""
+    if pelvis_height < 0.0 or pelvis_height >= cfg.walk_height_threshold:
+        return SonicPlannerCommand(
+            mode=cmd.mode,
+            movement=cmd.movement.copy(),
+            facing=cmd.facing.copy(),
+            speed=cmd.speed,
+            height=-1.0,
+        )
+
+    height = float(np.clip(pelvis_height, 0.1, cfg.max_height))
+    if height >= cfg.squat_height_min:
+        mode = cfg.squat_mode
+    else:
+        mode = cfg.kneel_mode
+
+    return SonicPlannerCommand(
+        mode=mode,
+        movement=np.zeros(3, dtype=np.float64),
+        facing=cmd.facing.copy(),
+        speed=-1.0,
+        height=height,
+    )
+
+
+def update_facing_from_head(
+    head_pose: np.ndarray,
+    state: HeadLocomotionState,
+    cfg: HeadLocomotionConfig,
+) -> np.ndarray:
+    head_yaw = yaw_from_rot(head_pose[:3, :3])
+    target_facing = wrap_to_pi(head_yaw - state.calib_yaw)
+    fac_alpha = float(np.clip(cfg.facing_smooth_alpha, 0.05, 1.0))
+    state.facing_angle = wrap_to_pi(
+        state.facing_angle + fac_alpha * wrap_to_pi(target_facing - state.facing_angle)
+    )
+    return _facing_from_angle(state.facing_angle)
+
+
 def _facing_from_angle(angle: float) -> np.ndarray:
     return np.array([np.cos(angle), np.sin(angle), 0.0], dtype=np.float64)
 
@@ -283,6 +387,7 @@ def reset_head_locomotion_state(
     state.smooth_vx = 0.0
     state.smooth_vy = 0.0
     state.smooth_vyaw = 0.0
+    state.smooth_pelvis_height = -1.0
     state.calibrated = False
     state.debug = {}
     if calib_yaw is not None:

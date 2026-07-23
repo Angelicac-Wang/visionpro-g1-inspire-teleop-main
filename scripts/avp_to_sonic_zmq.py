@@ -27,12 +27,29 @@ REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from g1_avp_calibration import (
+    CalibPhase,
+    CalibSession,
+    FkRobotReference,
+    ZmqFeedbackClient,
+    arm_hold,
+    collect_hold_sample,
+    finalize_pose_buffer,
+    merge_calibration,
+    robot_base_from_feedback,
+    sync_loco_zeros,
+)
 from g1_head_locomotion import (
+    HeadHeightSquatConfig,
     HeadLocomotionConfig,
     HeadLocomotionState,
+    SonicPlannerCommand,
+    apply_height_to_planner_command,
+    compute_head_pelvis_height,
     compute_sonic_planner_command,
     head_pose_from_tracking,
     reset_head_locomotion_state,
+    update_facing_from_head,
 )
 UNITREE_SIM_ROOT = os.environ.get("UNITREE_SIM_ROOT", "/mnt/newssd/unitree_sim_isaaclab")
 INSPIRE_HAND_SDK_ROOT = os.environ.get(
@@ -485,16 +502,34 @@ def head_yaw_compensated_rotation(head_pose: np.ndarray, wrist_pose: np.ndarray)
     return inverse_head_yaw @ wrist_pose[:3, :3]
 
 
-def capture_official_calibration(tracking, args=None) -> OfficialCalibration | None:
-    if tracking is None or tracking.head is None:
-        return None
+def official_calibration_head_pose(calibration: OfficialCalibration) -> np.ndarray:
+    pose = np.eye(4, dtype=np.float64)
+    pose[:3, :3] = np.asarray(calibration.head_rotation, dtype=np.float64)[:3, :3]
+    pose[:3, 3] = np.asarray(calibration.head_pose[:3, 3], dtype=np.float64)
+    return pose
 
-    head_pose = avp_to_robot(tracking.head)
-    left_pose = pose_or_none(tracking, "left", T_TO_UNITREE_HUMANOID_LEFT_ARM, args)
-    right_pose = pose_or_none(tracking, "right", T_TO_UNITREE_HUMANOID_RIGHT_ARM, args)
 
+def loco_sync_head_pose(
+    captured: OfficialCalibration,
+    hold_kind: str,
+    official_calibration: OfficialCalibration | None,
+) -> np.ndarray:
+    """Head reference for walk/squat/facing zeros.
+
+    CALIB_SYNC only realigns wrists — keep the CALIB_FULL head height zero.
+    """
+    if hold_kind == "sync" and official_calibration is not None:
+        return official_calibration_head_pose(official_calibration)
+    return captured.head_pose
+
+
+def make_official_calibration(
+    head_pose: np.ndarray,
+    left_pose: np.ndarray | None,
+    right_pose: np.ndarray | None,
+) -> OfficialCalibration:
     return OfficialCalibration(
-        head_pose=head_pose,
+        head_pose=head_pose.copy(),
         head_rotation=head_pose[:3, :3].copy(),
         left_rel=None if left_pose is None else head_yaw_compensated_relative(head_pose, left_pose),
         right_rel=None if right_pose is None else head_yaw_compensated_relative(head_pose, right_pose),
@@ -502,6 +537,59 @@ def capture_official_calibration(tracking, args=None) -> OfficialCalibration | N
         right_orientation=None if right_pose is None else rotmat_to_quat_wxyz(right_pose[:3, :3]),
         left_rotation=None if left_pose is None else head_yaw_compensated_rotation(head_pose, left_pose),
         right_rotation=None if right_pose is None else head_yaw_compensated_rotation(head_pose, right_pose),
+    )
+
+
+def tracking_arm_poses(tracking, args=None) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    if tracking is None or tracking.head is None:
+        return None, None, None
+    head_pose = avp_to_robot(tracking.head)
+    left_pose = pose_or_none(tracking, "left", T_TO_UNITREE_HUMANOID_LEFT_ARM, args)
+    right_pose = pose_or_none(tracking, "right", T_TO_UNITREE_HUMANOID_RIGHT_ARM, args)
+    return head_pose, left_pose, right_pose
+
+
+def capture_official_calibration(tracking, args=None) -> OfficialCalibration | None:
+    head_pose, left_pose, right_pose = tracking_arm_poses(tracking, args)
+    if head_pose is None:
+        return None
+    return make_official_calibration(head_pose, left_pose, right_pose)
+
+
+def finalize_calib_buffer(
+    buffer,
+    args,
+    *,
+    head_only: bool = False,
+) -> tuple[OfficialCalibration | None, object]:
+    require_left = hand_is_active(args, "left")
+    require_right = hand_is_active(args, "right")
+
+    def build_fn(head_pose, left_pose, right_pose):
+        return make_official_calibration(head_pose, left_pose, right_pose)
+
+    return finalize_pose_buffer(
+        buffer,
+        min_frames=args.calib_min_frames,
+        max_head_std_m=args.calib_max_head_std,
+        max_wrist_std_m=args.calib_max_wrist_std,
+        require_left=require_left,
+        require_right=require_right,
+        head_only=head_only,
+        build_calibration_fn=build_fn,
+    )
+
+
+def print_staged_calib_help() -> None:
+    print(
+        "\nStaged calibration (PICO VR_3PT aligned):\n"
+        "  F  CALIB_FULL — forearms-forward, hold still ~2s\n"
+        "  ]  ENGAGE      — start policy; wait until robot balances (MuJoCo: key 9)\n"
+        "  S  CALIB_SYNC  — match robot arms, hold still ~2s (needs deploy feedback)\n"
+        "  T  TELEOP      — live head walk + hands + squat\n"
+        "  H  HEAD zero   — recalibrate facing/squat height (during teleop)\n"
+        "  P  PAUSE       — freeze upper-body mapping\n"
+        "  c  alias for F"
     )
 
 
@@ -850,8 +938,11 @@ def build_official_calib_vr_targets(
         positions.append(clamp_vec(pos, limits))
         orientations.append(orn)
 
-    if force_base or args.lock_head_translation:
+    if force_base or (args.lock_head_translation and not args.head_vertical_follow):
         head_delta = np.zeros(3, dtype=np.float64)
+    elif args.lock_head_translation and args.head_vertical_follow:
+        dz = (head_pose[2, 3] - calibration.head_pose[2, 3]) * args.head_vertical_scale
+        head_delta = np.array([0.0, 0.0, dz], dtype=np.float64)
     else:
         head_delta = (head_pose[:3, 3] - calibration.head_pose[:3, 3]) * args.head_position_scale
     positions.append(clamp_vec(head_base + head_delta, limits))
@@ -1037,8 +1128,78 @@ def parse_args():
     parser.add_argument(
         "--calib-hold-sec",
         type=float,
-        default=1.5,
-        help="Seconds to hold the fixed robot init target after pressing c in official-calib mode.",
+        default=2.0,
+        help="Seconds to hold still during F/S/H calibration captures.",
+    )
+    parser.add_argument(
+        "--calib-min-frames",
+        type=int,
+        default=30,
+        help="Minimum AVP frames averaged per calibration hold.",
+    )
+    parser.add_argument(
+        "--calib-max-head-std",
+        type=float,
+        default=0.025,
+        help="Max head position std (m) during calibration hold.",
+    )
+    parser.add_argument(
+        "--calib-max-wrist-std",
+        type=float,
+        default=0.030,
+        help="Max wrist position std (m) during calibration hold.",
+    )
+    parser.add_argument(
+        "--staged-calib",
+        action="store_true",
+        default=True,
+        help="Use F/]/S/T staged calibration (PICO VR_3PT aligned).",
+    )
+    parser.add_argument(
+        "--legacy-calib-flow",
+        dest="staged_calib",
+        action="store_false",
+        help="Use legacy c/]/T calibration flow.",
+    )
+    parser.add_argument(
+        "--require-sync-calib",
+        action="store_true",
+        default=True,
+        help="Require S (CALIB_SYNC) before T when staged-calib is enabled.",
+    )
+    parser.add_argument(
+        "--no-require-sync-calib",
+        dest="require_sync_calib",
+        action="store_false",
+        help="Allow T after F and ] without S.",
+    )
+    parser.add_argument(
+        "--zmq-feedback-host",
+        default="127.0.0.1",
+        help="SONIC deploy ZMQ feedback host (g1_debug PUB, default port 5557).",
+    )
+    parser.add_argument(
+        "--zmq-feedback-port",
+        type=int,
+        default=5557,
+        help="SONIC deploy ZMQ feedback port.",
+    )
+    parser.add_argument(
+        "--zmq-feedback-topic",
+        default="g1_debug",
+        help="SONIC deploy ZMQ feedback topic prefix.",
+    )
+    parser.add_argument(
+        "--use-fk-calib",
+        action="store_true",
+        default=True,
+        help="Prefer G1 FK from body_q for CALIB_SYNC robot base when available.",
+    )
+    parser.add_argument(
+        "--no-use-fk-calib",
+        dest="use_fk_calib",
+        action="store_false",
+        help="Use vr_3point feedback only for CALIB_SYNC robot base.",
     )
     head_translation_group = parser.add_mutually_exclusive_group()
     head_translation_group.add_argument(
@@ -1244,6 +1405,43 @@ def parse_args():
     parser.add_argument("--loco-output-deadzone", type=float, default=0.04)
     parser.add_argument("--loco-idle-decay", type=float, default=0.85)
     parser.add_argument("--loco-mode", type=int, default=1, help="SONIC planner mode when walking.")
+    parser.add_argument(
+        "--head-height-squat",
+        action="store_true",
+        default=False,
+        help="Map AVP head vertical drop to SONIC squat/kneel planner height (mode 4/6).",
+    )
+    parser.add_argument(
+        "--no-head-height-squat",
+        dest="head_height_squat",
+        action="store_false",
+        help="Disable head-height squat mapping.",
+    )
+    parser.add_argument(
+        "--head-vertical-follow",
+        action="store_true",
+        default=None,
+        help="Move robot head target Z with operator squat while keeping XY locked.",
+    )
+    parser.add_argument(
+        "--no-head-vertical-follow",
+        dest="head_vertical_follow",
+        action="store_false",
+        help="Keep robot head target height fixed even when squat mapping is enabled.",
+    )
+    parser.add_argument(
+        "--head-vertical-scale",
+        type=float,
+        default=0.85,
+        help="Scale applied to AVP head Z delta when --head-vertical-follow is enabled.",
+    )
+    parser.add_argument("--squat-walk-threshold", type=float, default=0.72, help="Pelvis height above this allows walking.")
+    parser.add_argument("--squat-height-min", type=float, default=0.50, help="Pelvis height at full squat band.")
+    parser.add_argument("--squat-kneel-height", type=float, default=0.35, help="Pelvis height at deep kneel.")
+    parser.add_argument("--head-drop-start", type=float, default=0.06, help="Ignore head drop below this (meters).")
+    parser.add_argument("--head-drop-to-squat", type=float, default=0.24, help="Head drop (m) mapped to full squat band.")
+    parser.add_argument("--head-drop-to-kneel", type=float, default=0.42, help="Head drop (m) mapped to kneel band.")
+    parser.add_argument("--squat-height-smooth", type=float, default=0.18, help="Low-pass alpha for pelvis height.")
     thumb_rotation_command_group = parser.add_mutually_exclusive_group()
     thumb_rotation_command_group.add_argument(
         "--invert-thumb-rotation-command",
@@ -1263,6 +1461,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.head_vertical_follow is None:
+        args.head_vertical_follow = bool(args.head_height_squat)
     period = 1.0 / max(args.publish_rate, 1e-6)
     streamer = VisionProStreamer(ip=args.avp_endpoint, record=False, benchmark_quiet=True)
     publisher = PackedPublisher(args.host, args.port)
@@ -1312,11 +1512,29 @@ def main():
             "Head locomotion ON: move head to walk/turn (work-master velocity model). "
             f"max_speed={args.loco_max_speed} smooth={args.loco_smooth}"
         )
+    if args.head_height_squat:
+        print(
+            "Head-height squat ON: duck to lower pelvis (mode 4/6). "
+            f"walk_above={args.squat_walk_threshold}m drop_squat={args.head_drop_to_squat}m"
+        )
+        if args.head_vertical_follow:
+            print(f"Head vertical follow ON: scale={args.head_vertical_scale}")
+    head_height_cfg = HeadHeightSquatConfig(
+        walk_height_threshold=args.squat_walk_threshold,
+        squat_height_min=args.squat_height_min,
+        kneel_height_min=args.squat_kneel_height,
+        head_drop_start=args.head_drop_start,
+        head_drop_to_squat=args.head_drop_to_squat,
+        head_drop_to_kneel=args.head_drop_to_kneel,
+        smooth_alpha=args.squat_height_smooth,
+    )
     if args.enable_inspire_hand_sim:
         print(f"Publishing sim Inspire hand commands on topic '{args.inspire_hand_topic}'.")
     if dds_hand_publisher is not None:
         print(f"Publishing physical Inspire right-hand commands to rt/inspire_hand/ctrl/{args.hand_topic_side}.")
-    if args.mapping_mode == "official-calib":
+    if args.mapping_mode == "official-calib" and args.staged_calib:
+        print_staged_calib_help()
+    elif args.mapping_mode == "official-calib":
         print(
             "Official calibration mode: startup holds the configured robot init pose; "
             "press c, hold your hands for the calibration delay, then tracking starts."
@@ -1331,9 +1549,18 @@ def main():
     official_base_positions = default_official_base_positions(args)
     official_base_orientations = default_official_base_orientations()
     calib_hold_until = 0.0
+    calib_session = CalibSession()
     pending_calibration_deadline = 0.0
     pending_base_positions = None
     pending_base_orientations = None
+    feedback_client = (
+        ZmqFeedbackClient(args.zmq_feedback_host, args.zmq_feedback_port, args.zmq_feedback_topic)
+        if args.mapping_mode == "official-calib" and args.staged_calib
+        else None
+    )
+    fk_ref = FkRobotReference() if args.use_fk_calib else None
+    if feedback_client is not None and fk_ref is not None and not fk_ref.available and args.print_debug:
+        print(f"FK calib unavailable: {fk_ref._load_error}")
     last_sent_vr_position = None
     last_sent_vr_orientation = None
     head_loco_state = HeadLocomotionState()
@@ -1362,6 +1589,112 @@ def main():
     last_head_loco_time = None
     stand_hold = True
     policy_started = False
+    live_teleop = False
+
+    def apply_loco_sync(head_pose: np.ndarray) -> None:
+        nonlocal head_loco_calib_pos, head_loco_calib_rot
+        head_loco_calib_pos, head_loco_calib_rot, _ = sync_loco_zeros(
+            head_pose,
+            head_loco_state,
+            reset_head_locomotion_state,
+        )
+
+    def begin_calib_hold(kind: str) -> None:
+        nonlocal calib_hold_until, official_base_positions, official_base_orientations
+        arm_hold(calib_session, kind, args.calib_hold_sec)
+        calib_hold_until = calib_session.hold_deadline
+        if kind == "full":
+            official_base_positions = default_official_base_positions(args)
+            official_base_orientations = default_official_base_orientations()
+            print(
+                f"\nCALIB_FULL: hold forearms-forward for {args.calib_hold_sec:.1f}s "
+                f"(robot init L={np.round(official_base_positions[0:3], 3).tolist()} "
+                f"R={np.round(official_base_positions[3:6], 3).tolist()})"
+            )
+        elif kind == "sync":
+            feedback = feedback_client.latest() if feedback_client is not None else None
+            base_pos, base_orn, source = robot_base_from_feedback(
+                feedback,
+                fk_ref,
+                fallback_positions=official_base_positions,
+                fallback_orientations=official_base_orientations,
+                prefer_fk=args.use_fk_calib,
+            )
+            official_base_positions = base_pos
+            official_base_orientations = base_orn
+            if source == "fallback_init":
+                print(
+                    "\nWARNING: no deploy feedback on "
+                    f"{args.zmq_feedback_host}:{args.zmq_feedback_port} "
+                    f"topic '{args.zmq_feedback_topic}' — using init pose as robot base."
+                )
+            print(
+                f"\nCALIB_SYNC: align arms to robot, hold {args.calib_hold_sec:.1f}s "
+                f"(robot base from {source})"
+            )
+        elif kind == "head":
+            print(f"\nHEAD zero: look forward, hold {args.calib_hold_sec:.1f}s")
+
+    def commit_calib_hold() -> bool:
+        nonlocal official_calibration, calib_hold_until, live_teleop
+        captured, quality = finalize_calib_buffer(
+            calib_session.buffer,
+            args,
+            head_only=(calib_session.hold_kind == "head"),
+        )
+        calib_session.last_quality = quality
+        print(f"\nCalibration quality: {quality.summary()} ({quality.message})")
+        if captured is None:
+            print("Calibration FAILED — hold still and retry.")
+            calib_session.phase = (
+                CalibPhase.ENGAGED if policy_started else CalibPhase.READY
+            )
+            calib_hold_until = 0.0
+            return False
+
+        head_pose = captured.head_pose
+        if calib_session.hold_kind == "sync" and official_calibration is not None:
+            official_calibration = merge_calibration(
+                official_calibration,
+                captured,
+                preserve_head=True,
+                preserve_wrists=False,
+            )
+        elif calib_session.hold_kind == "head" and official_calibration is not None:
+            official_calibration = merge_calibration(
+                official_calibration,
+                captured,
+                preserve_head=False,
+                preserve_wrists=True,
+            )
+        else:
+            official_calibration = captured
+
+        loco_head = loco_sync_head_pose(
+            captured,
+            calib_session.hold_kind,
+            official_calibration,
+        )
+        if calib_session.hold_kind == "sync":
+            print(
+                "  squat/walk head zero kept from CALIB_FULL "
+                f"(Z={loco_head[2, 3]:.3f} m; S only updates wrists)"
+            )
+        apply_loco_sync(loco_head)
+        calib_hold_until = 0.0
+
+        if calib_session.hold_kind == "full":
+            calib_session.full_done = True
+            calib_session.phase = CalibPhase.READY
+            print("CALIB_FULL done. Press ] to engage policy and wait for balance, then S then T.")
+        elif calib_session.hold_kind == "sync":
+            calib_session.sync_done = True
+            calib_session.phase = CalibPhase.ENGAGED if not live_teleop else CalibPhase.TELEOP
+            print("CALIB_SYNC done. Press T for teleop (or S again if arms drift).")
+        elif calib_session.hold_kind == "head":
+            calib_session.phase = CalibPhase.TELEOP if live_teleop else CalibPhase.ENGAGED
+            print("HEAD zero updated.")
+        return True
     try:
         with RawKeyboard() as keyboard:
             last_debug = 0.0
@@ -1388,9 +1721,12 @@ def main():
                         "head=",
                         np.round(official_base_positions[6:9], 3).tolist(),
                     )
-                    if args.mapping_mode == "official-calib":
+                    if args.mapping_mode == "official-calib" and args.staged_calib:
+                        calib_session.phase = CalibPhase.READY
+                        print("Holding robot init pose. Press F (or c) for CALIB_FULL.")
+                    elif args.mapping_mode == "official-calib":
                         print("Holding robot init pose. Press C to calibrate and start AVP tracking.")
-                    if not args.no_auto_start:
+                    if not args.no_auto_start and not args.staged_calib:
                         publisher.send_command(start=True, stop=False, planner=True)
                         last_start = now
                         policy_started = True
@@ -1400,8 +1736,106 @@ def main():
                     time.sleep(0.02)
                     continue
 
+                if feedback_client is not None:
+                    feedback_client.poll()
+
+                head_pose, left_pose, right_pose = tracking_arm_poses(tracking, args)
+
+                if calib_session.phase in (
+                    CalibPhase.FULL_HOLD,
+                    CalibPhase.SYNC_HOLD,
+                    CalibPhase.HEAD_HOLD,
+                ):
+                    if head_pose is not None:
+                        collect_hold_sample(calib_session, head_pose, left_pose, right_pose)
+                    if calib_session.hold_deadline > 0.0 and now >= calib_session.hold_deadline:
+                        commit_calib_hold()
+
                 for key in keyboard.read_keys():
-                    if key == "]":
+                    if args.staged_calib and args.mapping_mode == "official-calib":
+                        if key in ("f", "F", "c", "C"):
+                            if calib_session.phase in (
+                                CalibPhase.FULL_HOLD,
+                                CalibPhase.SYNC_HOLD,
+                                CalibPhase.HEAD_HOLD,
+                            ):
+                                print("\nCalibration already in progress.")
+                            else:
+                                begin_calib_hold("full")
+                            continue
+                        if key == "]":
+                            if not calib_session.full_done:
+                                print("\nDo CALIB_FULL (F) before engaging policy.")
+                                continue
+                            publisher.send_command(start=True, stop=False, planner=True)
+                            last_start = now
+                            policy_started = True
+                            stand_hold = True
+                            live_teleop = False
+                            calib_session.phase = CalibPhase.ENGAGED
+                            state.set_idle()
+                            state.facing_angle = 0.0
+                            print(
+                                "\nENGAGE: policy started (stand-hold). "
+                                "Wait for balance, align arms to robot, press S for CALIB_SYNC."
+                            )
+                            continue
+                        if key in ("s", "S"):
+                            if not policy_started:
+                                print("\nPress ] first to engage policy and wait for balance.")
+                                continue
+                            if not calib_session.full_done:
+                                print("\nDo CALIB_FULL (F) first.")
+                                continue
+                            begin_calib_hold("sync")
+                            continue
+                        if key in ("t", "T"):
+                            if not policy_started:
+                                publisher.send_command(start=True, stop=False, planner=True)
+                                last_start = now
+                                policy_started = True
+                            if not calib_session.full_done:
+                                print("\nDo CALIB_FULL (F) first.")
+                                continue
+                            if args.require_sync_calib and not calib_session.sync_done:
+                                print("\nDo CALIB_SYNC (S) after robot balances, then press T.")
+                                continue
+                            if official_calibration is None:
+                                print("\nCalibration missing — run F then S.")
+                                continue
+                            stand_hold = False
+                            live_teleop = True
+                            calib_session.paused = False
+                            calib_session.phase = CalibPhase.TELEOP
+                            if head_pose is not None and head_loco_calib_pos is None:
+                                apply_loco_sync(head_pose)
+                            msg = "TELEOP live: AVP hands + head walk/squat."
+                            print(f"\n{msg}")
+                            continue
+                        if key in ("h", "H"):
+                            if official_calibration is None:
+                                print("\nRun CALIB_FULL (F) first.")
+                                continue
+                            begin_calib_hold("head")
+                            continue
+                        if key in ("p", "P"):
+                            if not live_teleop:
+                                print("\nPAUSE only applies during teleop.")
+                                continue
+                            calib_session.paused = not calib_session.paused
+                            if calib_session.paused:
+                                calib_session.phase = CalibPhase.PAUSED
+                                stand_hold = True
+                                print("\nPAUSED: frozen at last robot target. Align body, press S then P to resume.")
+                            else:
+                                calib_session.phase = CalibPhase.TELEOP
+                                stand_hold = False
+                                print("\nResumed teleop.")
+                            continue
+
+                    if key == "]" and (
+                        not args.staged_calib or args.mapping_mode != "official-calib"
+                    ):
                         publisher.send_command(start=True, stop=False, planner=True)
                         last_start = now
                         policy_started = True
@@ -1413,20 +1847,17 @@ def main():
                             "Keep head/hands still until robot balances, then press T for teleop."
                         )
                         continue
-                    if key in ("t", "T"):
+                    if key in ("t", "T") and (
+                        not args.staged_calib or args.mapping_mode != "official-calib"
+                    ):
                         if not policy_started:
                             publisher.send_command(start=True, stop=False, planner=True)
                             last_start = now
                             policy_started = True
                         stand_hold = False
-                        head_loco_calib_pos = None
-                        head_loco_calib_rot = None
-                        calib_yaw = None
-                        if tracking is not None and tracking.head is not None:
-                            hp = head_pose_from_tracking(tracking)
-                            if hp is not None:
-                                calib_yaw = yaw_from_rot(hp[:3, :3])
-                        reset_head_locomotion_state(head_loco_state, calib_yaw=calib_yaw)
+                        live_teleop = True
+                        if head_pose is not None:
+                            apply_loco_sync(head_pose)
                         msg = "Teleop enabled: AVP hands drive upper body."
                         if args.head_locomotion:
                             msg += " Forward/back = lean head; strafe = shift head left/right; turn head to change direction."
@@ -1434,7 +1865,9 @@ def main():
                             msg += " Use WASD in this terminal to walk."
                         print(f"\n{msg}")
                         continue
-                    if key in ("c", "C"):
+                    if key in ("c", "C") and (
+                        not args.staged_calib or args.mapping_mode != "official-calib"
+                    ):
                         if args.mapping_mode == "official-calib":
                             if args.official_calib_base == "current-target" and last_sent_vr_position is not None:
                                 pending_base_positions = np.asarray(last_sent_vr_position, dtype=np.float64).reshape(9).copy()
@@ -1470,45 +1903,75 @@ def main():
                         print("\nSent SONIC stop command.")
                         return
 
-                head_loco_allowed = (
-                    not stand_hold
-                    and (args.mapping_mode != "official-calib" or official_calibration is not None)
-                )
+                if args.staged_calib and args.mapping_mode == "official-calib":
+                    head_motion_allowed = (
+                        live_teleop
+                        and not calib_session.paused
+                        and official_calibration is not None
+                    )
+                else:
+                    head_motion_allowed = (
+                        not stand_hold
+                        and (args.mapping_mode != "official-calib" or official_calibration is not None)
+                    )
+
+                if head_pose is None and tracking is not None and tracking.head is not None:
+                    head_pose = head_pose_from_tracking(tracking)
+
+                planner_cmd = None
                 if (
                     args.head_locomotion
-                    and head_loco_allowed
-                    and tracking is not None
-                    and tracking.head is not None
+                    and head_motion_allowed
+                    and head_pose is not None
+                    and head_loco_calib_pos is not None
                 ):
-                    head_pose = head_pose_from_tracking(tracking)
-                    if head_pose is not None:
-                        if head_loco_calib_pos is None:
-                            head_loco_calib_pos = head_pose[:3, 3].copy()
-                            head_loco_calib_rot = head_pose[:3, :3].copy()
-                            head_loco_state.calib_yaw = yaw_from_rot(head_pose[:3, :3])
-                            head_loco_state.facing_angle = 0.0
-                            print(
-                                "\nHead locomotion calibrated at "
-                                f"{np.round(head_loco_calib_pos, 3).tolist()} "
-                                f"(forward = current head yaw)"
-                            )
-                        loop_dt = max(now - last_head_loco_time, period) if last_head_loco_time else period
-                        last_head_loco_time = now
-                        planner_cmd = compute_sonic_planner_command(
-                            head_pose,
-                            head_loco_state,
-                            head_loco_cfg,
-                            loop_dt,
-                            calib_pos=head_loco_calib_pos,
-                            calib_rot=head_loco_calib_rot,
-                            locomotion_mode=args.loco_mode,
+                    loop_dt = max(now - last_head_loco_time, period) if last_head_loco_time else period
+                    last_head_loco_time = now
+                    planner_cmd = compute_sonic_planner_command(
+                        head_pose,
+                        head_loco_state,
+                        head_loco_cfg,
+                        loop_dt,
+                        calib_pos=head_loco_calib_pos,
+                        calib_rot=head_loco_calib_rot,
+                        locomotion_mode=args.loco_mode,
+                    )
+
+                if (
+                    args.head_height_squat
+                    and head_motion_allowed
+                    and head_pose is not None
+                    and head_loco_calib_pos is not None
+                ):
+                    pelvis_height, height_debug = compute_head_pelvis_height(
+                        head_pose,
+                        head_loco_calib_pos,
+                        head_loco_state,
+                        head_height_cfg,
+                    )
+                    if planner_cmd is None:
+                        facing = update_facing_from_head(head_pose, head_loco_state, head_loco_cfg)
+                        planner_cmd = SonicPlannerCommand(
+                            mode=0,
+                            movement=np.zeros(3, dtype=np.float64),
+                            facing=facing,
+                            speed=-1.0,
                         )
-                        state.mode = planner_cmd.mode
-                        state.movement = planner_cmd.movement.copy()
-                        state.speed = planner_cmd.speed
-                        state.facing_angle = float(
-                            np.arctan2(planner_cmd.facing[1], planner_cmd.facing[0])
-                        )
+                    planner_cmd = apply_height_to_planner_command(
+                        planner_cmd,
+                        pelvis_height,
+                        head_height_cfg,
+                    )
+                    head_loco_state.debug.update(height_debug)
+
+                if planner_cmd is not None:
+                    state.mode = planner_cmd.mode
+                    state.movement = planner_cmd.movement.copy()
+                    state.speed = planner_cmd.speed
+                    state.height = planner_cmd.height
+                    state.facing_angle = float(
+                        np.arctan2(planner_cmd.facing[1], planner_cmd.facing[0])
+                    )
 
                 if stand_hold:
                     state.set_idle()
@@ -1518,7 +1981,11 @@ def main():
                     last_start = now
                     policy_started = True
 
-                if pending_calibration_deadline > 0.0 and now >= pending_calibration_deadline:
+                if (
+                    not args.staged_calib
+                    and pending_calibration_deadline > 0.0
+                    and now >= pending_calibration_deadline
+                ):
                     captured = capture_official_calibration(tracking, args)
                     if captured is None:
                         print("\nCalibration delayed: AVP head tracking is not ready.")
@@ -1526,14 +1993,8 @@ def main():
                         calib_hold_until = pending_calibration_deadline
                     else:
                         official_calibration = captured
-                        head_loco_calib_pos = None
-                        head_loco_calib_rot = None
-                        calib_yaw = None
-                        if tracking is not None and tracking.head is not None:
-                            hp = head_pose_from_tracking(tracking)
-                            if hp is not None:
-                                calib_yaw = yaw_from_rot(hp[:3, :3])
-                        reset_head_locomotion_state(head_loco_state, calib_yaw=calib_yaw)
+                        if head_pose is not None:
+                            apply_loco_sync(head_pose)
                         if pending_base_positions is not None:
                             official_base_positions = pending_base_positions.copy()
                         if pending_base_orientations is not None:
@@ -1551,7 +2012,14 @@ def main():
                         )
 
                 hand_debug_lines = []
-                if enable_inspire_hand:
+                hand_teleop_active = (
+                    enable_inspire_hand
+                    and (
+                        not (args.staged_calib and args.mapping_mode == "official-calib")
+                        or (live_teleop and not calib_session.paused)
+                    )
+                )
+                if hand_teleop_active:
                     saw_hand_tracking = False
                     for side, mapper in (
                         ("left", left_hand_mapper),
@@ -1636,7 +2104,15 @@ def main():
                             official_base_positions,
                             official_base_orientations,
                             args,
-                            force_base=now < calib_hold_until,
+                            force_base=(
+                                now < calib_hold_until
+                                or calib_session.paused
+                                or (
+                                    args.staged_calib
+                                    and args.mapping_mode == "official-calib"
+                                    and not live_teleop
+                                )
+                            ),
                         )
                         if result is None:
                             targets = None
@@ -1657,7 +2133,12 @@ def main():
                         targets = (vr_position, vr_orientation)
                 if targets is not None and policy_started:
                     vr_position, vr_orientation = targets
-                    if args.mapping_mode in ("hybrid", "official-calib") and not args.legacy_head_relative:
+                    if (
+                        args.mapping_mode in ("hybrid", "official-calib")
+                        and not args.legacy_head_relative
+                        and live_teleop
+                        and not calib_session.paused
+                    ):
                         vr_position = smoother.update(
                             vr_position,
                             now,
@@ -1684,6 +2165,8 @@ def main():
                         print(
                             "mode=",
                             state.mode,
+                            "height=",
+                            round(state.height, 3) if state.height >= 0 else state.height,
                             "move=",
                             np.round(state.movement, 3).tolist(),
                             "face=",
@@ -1728,6 +2211,12 @@ def main():
                                 head_loco_state.debug.get("cmd"),
                                 "strafe=",
                                 head_loco_state.debug.get("strafe_intent"),
+                                "head_dz=",
+                                head_loco_state.debug.get("head_delta_z"),
+                                "head_drop=",
+                                head_loco_state.debug.get("head_drop"),
+                                "pelvis_h=",
+                                head_loco_state.debug.get("pelvis_height"),
                             )
                         for line in hand_debug_lines:
                             print(line)
@@ -1735,6 +2224,8 @@ def main():
 
                 time.sleep(period)
     finally:
+        if feedback_client is not None:
+            feedback_client.close()
         if dds_hand_publisher is not None:
             try:
                 dds_hand_publisher.send(hand_open_command)

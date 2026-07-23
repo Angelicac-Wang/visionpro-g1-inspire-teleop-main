@@ -49,12 +49,12 @@ MuJoCo (Terminal 1): press 9 once after ] if robot hangs in the air.
 
 Operator:
   1) Wait for "AVP tracking locked"
-  2) Terminal 2 shows planner loop timing
-  3) Press c, hold init pose ~1.5s until "Calibration captured..."
-  4) Press ] for stand-hold; keep still until robot balances (press 9 in MuJoCo if needed)
-  5) Press T for teleop + head walking (lean head to walk, rotate to turn)
-  6) WASD still works in Terminal 3 as fallback
-  7) Press o here / O in deploy to stop
+  2) F — CALIB_FULL: forearms-forward, hold ~2s (c works too)
+  3) ] — ENGAGE policy; wait for balance (MuJoCo key 9 if needed)
+  4) S — CALIB_SYNC: match robot arms, hold ~2s (uses deploy feedback :5557)
+  5) T — TELEOP: head walk + squat + hands
+  P pause | H head zero | S re-sync if arms drift
+  6) Press o here / O in deploy to stop
 EOF
 
 cd "${REPO_ROOT}"

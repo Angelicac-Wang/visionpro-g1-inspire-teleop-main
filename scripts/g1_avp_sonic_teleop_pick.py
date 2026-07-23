@@ -21,6 +21,8 @@ def main() -> None:
         argv.append("--no-auto-start")
     if "--head-locomotion" not in argv:
         argv.append("--head-locomotion")
+    if "--head-height-squat" not in argv and "--no-head-height-squat" not in argv:
+        argv.append("--head-height-squat")
     if "--enable-inspire-hand-sim" not in argv:
         argv.append("--enable-inspire-hand-sim")
 

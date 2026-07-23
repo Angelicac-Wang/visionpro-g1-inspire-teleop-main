@@ -1,6 +1,7 @@
 numpy
 scipy
 pyzmq
+msgpack
 matplotlib==3.7.5
 opencv-python
 cyclonedds==0.10.2
