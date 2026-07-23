@@ -69,7 +69,14 @@ SONIC Terminal 1 — MuJoCo sim loop
   Next: Terminal 2 -> ./run_sonic_deploy.sh
         Terminal 3 -> ./run_sonic_avp_teleop.sh <VP_IP>
   MuJoCo tip: press 9 to toggle elastic band (helps robot settle on floor)
+  FPV: head_camera streams to Vision Pro when Terminal 3 uses --enable-mujoco-fpv (default)
 EOF
 
+FPV_ARGS=()
+if [[ "${SONIC_ENABLE_FPV:-1}" != "0" ]]; then
+  FPV_ARGS=(--enable-offscreen --enable-image-publish)
+  echo "  Camera publish: ON (ZMQ :5555 ego_view / head_camera)"
+fi
+
 cd "${GR00T_ROOT}"
-exec "${VENV_SIM}/bin/python" "${REPO_ROOT}/scripts/sonic_run_sim_loop.py"
+exec "${VENV_SIM}/bin/python" "${REPO_ROOT}/scripts/sonic_run_sim_loop.py" "${FPV_ARGS[@]}" "$@"

@@ -23,11 +23,13 @@ def main() -> None:
         argv.append("--head-locomotion")
     if "--head-height-squat" not in argv and "--no-head-height-squat" not in argv:
         argv.append("--head-height-squat")
+    if "--enable-mujoco-fpv" not in argv and "--no-mujoco-fpv" not in argv:
+        argv.append("--enable-mujoco-fpv")
 
     sys.argv = argv
     print(f"[g1_avp_sonic_teleop] Running {BRIDGE}")
     print("[g1_avp_sonic_teleop] Flow: F -> ] -> S -> T  (CALIB_FULL / ENGAGE / SYNC / TELEOP)")
-    print("[g1_avp_sonic_teleop] Duck/squat follows head height. P=pause, H=head zero, c=alias F")
+    print("[g1_avp_sonic_teleop] MuJoCo FPV ON by default (needs SONIC_ENABLE_FPV sim). Duck/squat + P/H/S keys.")
     runpy.run_path(str(BRIDGE), run_name="__main__")
 
 

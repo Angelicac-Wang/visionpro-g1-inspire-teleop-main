@@ -40,10 +40,12 @@ SONIC Terminal 3 — AVP bridge
   Endpoint: ${AVP_ENDPOINT}
   PUB bind: tcp://*:5556  (SONIC deploy must use --zmq-host localhost)
   Mapping: official-calib (head + 2 hands, Pico-style yaw-compensated wrists)
-  Locomotion: head walk after T (WASD still works in this terminal)
+  Locomotion: head walk after T
+  MuJoCo FPV: robot head_camera -> Vision Pro (default ON; Terminal 1 publishes :5555)
 
 Vision Pro:
   Open Tracking Streamer app -> Start (same Wi-Fi as this PC).
+  You should see the sim robot view inside the app while teleoperating.
 
 MuJoCo (Terminal 1): press 9 once after ] if robot hangs in the air.
 

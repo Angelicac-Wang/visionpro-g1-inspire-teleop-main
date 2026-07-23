@@ -1442,6 +1442,33 @@ def parse_args():
     parser.add_argument("--head-drop-to-squat", type=float, default=0.24, help="Head drop (m) mapped to full squat band.")
     parser.add_argument("--head-drop-to-kneel", type=float, default=0.42, help="Head drop (m) mapped to kneel band.")
     parser.add_argument("--squat-height-smooth", type=float, default=0.18, help="Low-pass alpha for pelvis height.")
+    parser.add_argument(
+        "--enable-mujoco-fpv",
+        action="store_true",
+        default=False,
+        help="Stream MuJoCo head_camera to Vision Pro via Tracking Streamer WebRTC.",
+    )
+    parser.add_argument(
+        "--no-mujoco-fpv",
+        dest="enable_mujoco_fpv",
+        action="store_false",
+        help="Disable MuJoCo first-person video on Vision Pro.",
+    )
+    parser.add_argument("--mujoco-camera-host", default="127.0.0.1", help="MuJoCo camera ZMQ host.")
+    parser.add_argument("--mujoco-camera-port", type=int, default=5555, help="MuJoCo camera ZMQ port.")
+    parser.add_argument(
+        "--mujoco-camera-name",
+        default="ego_view",
+        help="Camera name from MuJoCo sim image publish (ego_view = head_camera).",
+    )
+    parser.add_argument(
+        "--avp-webrtc-port",
+        type=int,
+        default=9999,
+        help="WebRTC port for Vision Pro Tracking Streamer video.",
+    )
+    parser.add_argument("--avp-video-size", default="1280x720", help="Video resolution sent to Vision Pro.")
+    parser.add_argument("--avp-video-fps", type=int, default=30, help="Target FPV frame rate.")
     thumb_rotation_command_group = parser.add_mutually_exclusive_group()
     thumb_rotation_command_group.add_argument(
         "--invert-thumb-rotation-command",
@@ -1465,6 +1492,22 @@ def main():
         args.head_vertical_follow = bool(args.head_height_squat)
     period = 1.0 / max(args.publish_rate, 1e-6)
     streamer = VisionProStreamer(ip=args.avp_endpoint, record=False, benchmark_quiet=True)
+    fpv_streamer = None
+    if args.enable_mujoco_fpv:
+        try:
+            from sonic_mujoco_fpv import MujocoFpvStreamer
+
+            fpv_streamer = MujocoFpvStreamer(
+                streamer,
+                camera_host=args.mujoco_camera_host,
+                camera_port=args.mujoco_camera_port,
+                camera_name=args.mujoco_camera_name,
+                webrtc_port=args.avp_webrtc_port,
+                video_size=args.avp_video_size,
+                fps=args.avp_video_fps,
+            )
+        except Exception as exc:
+            print(f"WARNING: MuJoCo FPV disabled: {exc}")
     publisher = PackedPublisher(args.host, args.port)
     state = BridgeState()
     smoother = PositionSmoother()
@@ -1519,6 +1562,12 @@ def main():
         )
         if args.head_vertical_follow:
             print(f"Head vertical follow ON: scale={args.head_vertical_scale}")
+    if args.enable_mujoco_fpv:
+        print(
+            "MuJoCo FPV ON: robot head_camera -> Vision Pro WebRTC "
+            f"(sim ZMQ {args.mujoco_camera_host}:{args.mujoco_camera_port}, "
+            f"webrtc :{args.avp_webrtc_port})"
+        )
     head_height_cfg = HeadHeightSquatConfig(
         walk_height_threshold=args.squat_walk_threshold,
         squat_height_min=args.squat_height_min,
@@ -1738,6 +1787,9 @@ def main():
 
                 if feedback_client is not None:
                     feedback_client.poll()
+
+                if fpv_streamer is not None:
+                    fpv_streamer.push_latest()
 
                 head_pose, left_pose, right_pose = tracking_arm_poses(tracking, args)
 
@@ -2224,6 +2276,8 @@ def main():
 
                 time.sleep(period)
     finally:
+        if fpv_streamer is not None:
+            fpv_streamer.close()
         if feedback_client is not None:
             feedback_client.close()
         if dds_hand_publisher is not None:

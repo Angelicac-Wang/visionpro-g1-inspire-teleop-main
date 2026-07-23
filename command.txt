@@ -56,6 +56,13 @@ Squat notes:
   - If squat trigger feels early/late: H for head zero, or tune --head-drop-to-squat
   - If hands drift: S again while aligned to robot (preserves head zero from F)
 
+MuJoCo FPV on Vision Pro (compare arm angles while teleoping):
+  Terminal 1: ./run_sonic_sim_loop.sh   (SONIC_ENABLE_FPV=1 default -> ZMQ :5555 ego_view)
+  Terminal 3: ./run_sonic_avp_teleop.sh <VP_IP>   (--enable-mujoco-fpv ON by default)
+  Vision Pro: Tracking Streamer -> Start -> immersive view shows robot head_camera + your hands
+  Terminal 3 should print: [mujoco_fpv] First frame sent
+  Disable: Terminal 3 --no-mujoco-fpv ; Terminal 1 SONIC_ENABLE_FPV=0
+
 Legacy flow (old c/]/T only): add --legacy-calib-flow to avp_to_sonic_zmq.py
 
 Real robot (no MuJoCo sim loop):

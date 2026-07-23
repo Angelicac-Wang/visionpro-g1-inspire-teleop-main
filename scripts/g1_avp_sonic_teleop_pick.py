@@ -23,6 +23,8 @@ def main() -> None:
         argv.append("--head-locomotion")
     if "--head-height-squat" not in argv and "--no-head-height-squat" not in argv:
         argv.append("--head-height-squat")
+    if "--enable-mujoco-fpv" not in argv:
+        argv.append("--enable-mujoco-fpv")
     if "--enable-inspire-hand-sim" not in argv:
         argv.append("--enable-inspire-hand-sim")
 
