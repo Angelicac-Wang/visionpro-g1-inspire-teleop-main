@@ -1,7 +1,7 @@
 """AVP ↔ SONIC staged calibration (PICO VR_3PT aligned).
 
 Phases:
-  F  CALIB_FULL  — operator forearms-forward vs robot init pose
+  F  CALIB_FULL  — operator forearms-forward vs robot calib ref (stand-hold uses --robot-init-pose)
   ]  ENGAGE      — start policy, stand hold
   S  CALIB_SYNC  — wrists vs current robot (ZMQ feedback / optional FK)
   T  TELEOP      — live control (unified head/walk/squat zero)
@@ -69,6 +69,7 @@ class CalibSession:
     hold_deadline: float = 0.0
     hold_kind: str = ""
     paused: bool = False
+    sync_ramp_active: bool = False
     buffer: PoseFrameBuffer = field(default_factory=lambda: PoseFrameBuffer())
     last_quality: CalibQuality | None = None
 

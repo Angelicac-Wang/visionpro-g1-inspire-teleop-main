@@ -53,6 +53,7 @@ Operator:
   1) Wait for "AVP tracking locked"
   2) F — CALIB_FULL: forearms-forward, hold ~2s (c works too)
   3) ] — ENGAGE policy; wait for balance (MuJoCo key 9 if needed)
+     Robot holds arms-down like real idle until S
   4) S — CALIB_SYNC: match robot arms, hold ~2s (uses deploy feedback :5557)
   5) T — TELEOP: head walk + squat + hands
   P pause | H head zero | S re-sync if arms drift

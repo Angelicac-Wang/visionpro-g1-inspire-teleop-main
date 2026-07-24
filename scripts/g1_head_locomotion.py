@@ -144,7 +144,11 @@ def compute_head_locomotion_velocity(
     state.prev_head_pos = pos.copy()
     state.prev_head_yaw = yaw
 
-    vel_local = rotation_z(-yaw) @ vel_world
+    if calib_rot is not None:
+        # Walk in the calibrated head frame (stable; independent of yaw extraction).
+        vel_local = np.asarray(calib_rot, dtype=np.float64)[:3, :3].T @ vel_world
+    else:
+        vel_local = rotation_z(-yaw) @ vel_world
     vx = cfg.velocity_gain * cfg.forward_scale * cfg.sign_x * float(vel_local[0])
     vy = cfg.velocity_gain * cfg.lateral_scale * cfg.sign_y * float(vel_local[1])
     vy_disp = 0.0
@@ -266,10 +270,16 @@ def compute_sonic_planner_command(
         calib_rot=calib_rot,
     )
 
-    cos_y = np.cos(head_yaw)
-    sin_y = np.sin(head_yaw)
-    wx = cos_y * vx - sin_y * vy
-    wy = sin_y * vx + cos_y * vy
+    if calib_rot is not None:
+        world_vel = np.asarray(calib_rot, dtype=np.float64)[:3, :3] @ np.array(
+            [vx, vy, 0.0], dtype=np.float64
+        )
+        wx, wy = float(world_vel[0]), float(world_vel[1])
+    else:
+        cos_y = np.cos(head_yaw)
+        sin_y = np.sin(head_yaw)
+        wx = cos_y * vx - sin_y * vy
+        wy = sin_y * vx + cos_y * vy
     local_speed = float(np.hypot(vx, vy))
     lat_dz = float(getattr(cfg, "lateral_velocity_deadzone", cfg.velocity_deadzone))
 

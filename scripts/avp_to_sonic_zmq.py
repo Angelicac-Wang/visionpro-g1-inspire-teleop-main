@@ -20,6 +20,8 @@ from dataclasses import dataclass
 
 import numpy as np
 import zmq
+from scipy.spatial.transform import Rotation as SciRotation
+from scipy.spatial.transform import Slerp
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +41,7 @@ from g1_avp_calibration import (
     robot_base_from_feedback,
     sync_loco_zeros,
 )
+from g1_avp_transforms import rotation_z, yaw_from_rot, yaw_from_rot_matrix
 from g1_head_locomotion import (
     HeadHeightSquatConfig,
     HeadLocomotionConfig,
@@ -287,6 +290,41 @@ class BridgeState:
         self.height = -1.0
 
 
+def _normalize_quat_wxyz(quat: np.ndarray) -> np.ndarray:
+    q = np.asarray(quat, dtype=np.float64).reshape(4)
+    norm = float(np.linalg.norm(q))
+    if norm < 1e-8:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    return q / norm
+
+
+def _slerp_quat_wxyz(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
+    t = float(np.clip(t, 0.0, 1.0))
+    q0 = _normalize_quat_wxyz(q0)
+    q1 = _normalize_quat_wxyz(q1)
+    if np.dot(q0, q1) < 0.0:
+        q1 = -q1
+    if t <= 0.0:
+        return q0.copy()
+    if t >= 1.0:
+        return q1.copy()
+    r0 = SciRotation.from_quat([q0[1], q0[2], q0[3], q0[0]])
+    r1 = SciRotation.from_quat([q1[1], q1[2], q1[3], q1[0]])
+    blended = Slerp([0.0, 1.0], SciRotation.concatenate([r0, r1]))([t])[0]
+    out = blended.as_quat()
+    return np.array([out[3], out[0], out[1], out[2]], dtype=np.float64)
+
+
+def _quat_geodesic_rad(q0: np.ndarray, q1: np.ndarray) -> float:
+    q0 = _normalize_quat_wxyz(q0)
+    q1 = _normalize_quat_wxyz(q1)
+    if np.dot(q0, q1) < 0.0:
+        q1 = -q1
+    r0 = SciRotation.from_quat([q0[1], q0[2], q0[3], q0[0]])
+    r1 = SciRotation.from_quat([q1[1], q1[2], q1[3], q1[0]])
+    return float((r0.inv() * r1).magnitude())
+
+
 class PositionSmoother:
     def __init__(self):
         self.position = None
@@ -295,6 +333,10 @@ class PositionSmoother:
     def reset(self):
         self.position = None
         self.last_time = None
+
+    def seed(self, position: np.ndarray, now: float) -> None:
+        self.position = np.asarray(position, dtype=np.float64).reshape(9).copy()
+        self.last_time = float(now)
 
     def update(self, target: np.ndarray, now: float, tau: float, max_speed: float) -> np.ndarray:
         target = np.asarray(target, dtype=np.float64).reshape(9)
@@ -319,6 +361,55 @@ class PositionSmoother:
 
         self.position = proposed
         return self.position.copy()
+
+
+class OrientationSmoother:
+    """Low-pass + angular speed cap for left/right/head quaternions (wxyz x3)."""
+
+    def __init__(self):
+        self.orientation = None
+        self.last_time = None
+
+    def reset(self):
+        self.orientation = None
+        self.last_time = None
+
+    def seed(self, orientation: np.ndarray, now: float) -> None:
+        self.orientation = np.asarray(orientation, dtype=np.float64).reshape(12).copy()
+        self.last_time = float(now)
+        for i in range(0, 12, 4):
+            self.orientation[i : i + 4] = _normalize_quat_wxyz(self.orientation[i : i + 4])
+
+    def update(
+        self,
+        target: np.ndarray,
+        now: float,
+        tau: float,
+        max_angular_speed: float,
+    ) -> np.ndarray:
+        target = np.asarray(target, dtype=np.float64).reshape(12)
+        if self.orientation is None or self.last_time is None:
+            self.orientation = target.copy()
+            self.last_time = now
+            for i in range(0, 12, 4):
+                self.orientation[i : i + 4] = _normalize_quat_wxyz(self.orientation[i : i + 4])
+            return self.orientation.copy()
+
+        dt = max(now - self.last_time, 1e-3)
+        self.last_time = now
+        alpha = 1.0 if tau <= 1e-6 else 1.0 - np.exp(-dt / tau)
+        out = self.orientation.copy()
+        for i in range(0, 12, 4):
+            q_curr = self.orientation[i : i + 4]
+            q_tgt = _normalize_quat_wxyz(target[i : i + 4])
+            step_t = alpha
+            if max_angular_speed > 0.0:
+                full_angle = _quat_geodesic_rad(q_curr, q_tgt)
+                if full_angle > 1e-8:
+                    step_t = min(step_t, (max_angular_speed * dt) / full_angle)
+            out[i : i + 4] = _slerp_quat_wxyz(q_curr, q_tgt, step_t)
+        self.orientation = out
+        return self.orientation.copy()
 
 
 @dataclass
@@ -473,32 +564,14 @@ def pose_or_none(tracking, side: str, arm_transform: np.ndarray, args=None) -> n
     return avp_to_robot(hand.wrist) @ arm_transform
 
 
-def yaw_from_rot(rot: np.ndarray) -> float:
-    r = np.asarray(rot, dtype=np.float64)[:3, :3]
-    return float(np.arctan2(r[1, 0], r[0, 0]))
-
-
-def rotation_z(angle: float) -> np.ndarray:
-    c = np.cos(angle)
-    s = np.sin(angle)
-    return np.array(
-        [
-            [c, -s, 0.0],
-            [s, c, 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=np.float64,
-    )
-
-
 def head_yaw_compensated_relative(head_pose: np.ndarray, wrist_pose: np.ndarray) -> np.ndarray:
     """Official Pico-style wrist target: wrist relative to head with headset yaw removed."""
-    inverse_head_yaw = rotation_z(-yaw_from_rot(head_pose[:3, :3]))
+    inverse_head_yaw = rotation_z(-yaw_from_rot_matrix(head_pose[:3, :3]))
     return inverse_head_yaw @ (wrist_pose[:3, 3] - head_pose[:3, 3])
 
 
 def head_yaw_compensated_rotation(head_pose: np.ndarray, wrist_pose: np.ndarray) -> np.ndarray:
-    inverse_head_yaw = rotation_z(-yaw_from_rot(head_pose[:3, :3]))
+    inverse_head_yaw = rotation_z(-yaw_from_rot_matrix(head_pose[:3, :3]))
     return inverse_head_yaw @ wrist_pose[:3, :3]
 
 
@@ -593,10 +666,32 @@ def print_staged_calib_help() -> None:
     )
 
 
+# G1 default standing (deploy INIT / real robot idle), FK in planner vr frame.
+_ARMS_DOWN_LEFT = np.array([0.2232, 0.2177, -0.1555], dtype=np.float64)
+_ARMS_DOWN_RIGHT = np.array([0.2232, -0.2177, -0.1555], dtype=np.float64)
+_ARMS_DOWN_LEFT_ORN = np.array([0.9168, 0.0897, 0.3864, 0.0463], dtype=np.float64)
+_ARMS_DOWN_RIGHT_ORN = np.array([0.9168, -0.0897, 0.3864, -0.0463], dtype=np.float64)
+_IDENTITY_QUAT_WXYZ = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+
+def configured_calib_full_robot_pose(args) -> tuple[np.ndarray, np.ndarray]:
+    """Forearms-forward reference used during CALIB_FULL (operator L-shape)."""
+    left = np.array([0.38, 0.124, 0.095], dtype=np.float64)
+    right = np.array([0.38, -0.124, 0.095], dtype=np.float64)
+    head = np.array([args.neutral_head_x, args.neutral_head_y, args.neutral_head_z], dtype=np.float64)
+    positions = np.concatenate([left, right, head])
+    orientations = np.tile(_IDENTITY_QUAT_WXYZ, 3)
+    return positions, orientations
+
+
 def configured_robot_init_pose(args) -> np.ndarray:
     if args.robot_init_pose in ("debug-ready", "forearms-forward"):
         left = np.array([0.38, 0.124, 0.095], dtype=np.float64)
         right = np.array([0.38, -0.124, 0.095], dtype=np.float64)
+        head = np.array([args.neutral_head_x, args.neutral_head_y, args.neutral_head_z], dtype=np.float64)
+    elif args.robot_init_pose == "arms-down":
+        left = _ARMS_DOWN_LEFT.copy()
+        right = _ARMS_DOWN_RIGHT.copy()
         head = np.array([args.neutral_head_x, args.neutral_head_y, args.neutral_head_z], dtype=np.float64)
     elif args.robot_init_pose == "arms-forward":
         left = np.array([0.32, 0.18, 0.26], dtype=np.float64)
@@ -618,8 +713,14 @@ def default_official_base_positions(args) -> np.ndarray:
     return configured_robot_init_pose(args)
 
 
-def default_official_base_orientations() -> np.ndarray:
-    return np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64), 3)
+def configured_robot_init_orientations(args) -> np.ndarray:
+    if args.robot_init_pose == "arms-down":
+        return np.concatenate([_ARMS_DOWN_LEFT_ORN, _ARMS_DOWN_RIGHT_ORN, _IDENTITY_QUAT_WXYZ])
+    return np.tile(_IDENTITY_QUAT_WXYZ, 3)
+
+
+def default_official_base_orientations(args) -> np.ndarray:
+    return configured_robot_init_orientations(args)
 
 
 def official_delta_axis_sign(args) -> np.ndarray:
@@ -781,7 +882,7 @@ def calibrated_head_orientation(
     args,
 ) -> np.ndarray:
     if args.head_yaw_only:
-        yaw_delta = yaw_from_rot(head_pose[:3, :3]) - yaw_from_rot(calibration.head_rotation)
+        yaw_delta = yaw_from_rot_matrix(head_pose[:3, :3]) - yaw_from_rot_matrix(calibration.head_rotation)
         rotation_delta = rotation_z(yaw_delta)
     else:
         rotation_delta = calibration.head_rotation.T @ head_pose[:3, :3]
@@ -1113,8 +1214,59 @@ def parse_args():
         action="store_true",
         help="Old hybrid behavior: add robot head base height to hand targets.",
     )
-    parser.add_argument("--hybrid-smoothing-tau", type=float, default=0.04, help="Low-pass time constant for hybrid vr_position.")
-    parser.add_argument("--hybrid-max-speed", type=float, default=0.45, help="Max target speed in m/s for each VR point in hybrid mode.")
+    parser.add_argument(
+        "--hybrid-smoothing-tau",
+        type=float,
+        default=0.04,
+        help="Low-pass time constant (s) for arm/head vr_position in official-calib teleop.",
+    )
+    parser.add_argument(
+        "--hybrid-max-speed",
+        type=float,
+        default=0.45,
+        help="Max target speed (m/s) for each VR point during teleop smoothing.",
+    )
+    parser.add_argument(
+        "--arm-orientation-smoothing-tau",
+        type=float,
+        default=0.12,
+        help="Low-pass time constant (s) for wrist/head quaternions during teleop.",
+    )
+    parser.add_argument(
+        "--arm-max-angular-speed",
+        type=float,
+        default=2.0,
+        help="Max wrist/head angular speed (rad/s) during teleop orientation smoothing.",
+    )
+    parser.add_argument(
+        "--arm-transition-max-speed",
+        type=float,
+        default=0.08,
+        help="Max VR point speed (m/s) during CALIB_SYNC ramp and after pressing T.",
+    )
+    parser.add_argument(
+        "--arm-transition-max-angular-speed",
+        type=float,
+        default=0.5,
+        help="Max wrist/head angular speed (rad/s) during pose transition ramps.",
+    )
+    parser.add_argument(
+        "--arm-transition-smoothing-tau",
+        type=float,
+        default=0.18,
+        help="Extra low-pass time constant (s) during pose transition ramps.",
+    )
+    parser.add_argument(
+        "--arm-transition-ramp-sec",
+        type=float,
+        default=6.0,
+        help="Seconds to keep transition speed limits after S sync or pressing T.",
+    )
+    parser.add_argument(
+        "--no-sync-ramp",
+        action="store_true",
+        help="After CALIB_SYNC, keep stand-hold base until T instead of slow arm ramp.",
+    )
     parser.add_argument(
         "--official-calib-base",
         choices=("current-target", "init-pose", "neutral"),
@@ -1273,11 +1425,11 @@ def parse_args():
     )
     parser.add_argument(
         "--robot-init-pose",
-        choices=("forearms-forward", "debug-ready", "arms-forward", "low-ready", "custom"),
-        default="forearms-forward",
+        choices=("arms-down", "forearms-forward", "debug-ready", "arms-forward", "low-ready", "custom"),
+        default="arms-down",
         help=(
-            "Fixed robot-side pose used by official-calib startup and by c when "
-            "--official-calib-base init-pose is selected."
+            "Robot stand-hold pose after ] (before S). 'arms-down' matches deploy INIT / "
+            "real idle; CALIB_FULL (F) still uses forearms-forward for operator alignment."
         ),
     )
     parser.add_argument(
@@ -1511,6 +1663,44 @@ def main():
     publisher = PackedPublisher(args.host, args.port)
     state = BridgeState()
     smoother = PositionSmoother()
+    orientation_smoother = OrientationSmoother()
+    transition_until = 0.0
+
+    def reset_arm_smoothers() -> None:
+        smoother.reset()
+        orientation_smoother.reset()
+
+    def seed_arm_smoothers_from_last(now: float) -> None:
+        if last_sent_vr_position is not None:
+            smoother.seed(last_sent_vr_position, now)
+        if last_sent_vr_orientation is not None:
+            orientation_smoother.seed(last_sent_vr_orientation, now)
+
+    def begin_transition_ramp(now: float, *, reason: str, reseed: bool = True) -> None:
+        nonlocal transition_until
+        transition_until = now + max(float(args.arm_transition_ramp_sec), 0.0)
+        if reseed:
+            seed_arm_smoothers_from_last(now)
+        print(
+            f"[arm_ramp] {reason} — max speed {args.arm_transition_max_speed:.2f} m/s, "
+            f"max turn {args.arm_transition_max_angular_speed:.2f} rad/s "
+            f"for {args.arm_transition_ramp_sec:.1f}s"
+        )
+
+    def arm_motion_limits(now: float) -> tuple[float, float, float, float]:
+        if now < transition_until:
+            return (
+                float(args.arm_transition_max_speed),
+                float(args.arm_transition_max_angular_speed),
+                max(float(args.hybrid_smoothing_tau), float(args.arm_transition_smoothing_tau)),
+                max(float(args.arm_orientation_smoothing_tau), float(args.arm_transition_smoothing_tau)),
+            )
+        return (
+            float(args.hybrid_max_speed),
+            float(args.arm_max_angular_speed),
+            float(args.hybrid_smoothing_tau),
+            float(args.arm_orientation_smoothing_tau),
+        )
     enable_inspire_hand = args.enable_inspire_hand_sim or args.enable_inspire_hand_dds
     left_hand_mapper = InspireHandMapper.from_args(args) if enable_inspire_hand else None
     right_hand_mapper = InspireHandMapper.from_args(args) if enable_inspire_hand else None
@@ -1596,7 +1786,7 @@ def main():
     neutral_right_pose = None
     official_calibration = None
     official_base_positions = default_official_base_positions(args)
-    official_base_orientations = default_official_base_orientations()
+    official_base_orientations = default_official_base_orientations(args)
     calib_hold_until = 0.0
     calib_session = CalibSession()
     pending_calibration_deadline = 0.0
@@ -1653,11 +1843,10 @@ def main():
         arm_hold(calib_session, kind, args.calib_hold_sec)
         calib_hold_until = calib_session.hold_deadline
         if kind == "full":
-            official_base_positions = default_official_base_positions(args)
-            official_base_orientations = default_official_base_orientations()
+            official_base_positions, official_base_orientations = configured_calib_full_robot_pose(args)
             print(
                 f"\nCALIB_FULL: hold forearms-forward for {args.calib_hold_sec:.1f}s "
-                f"(robot init L={np.round(official_base_positions[0:3], 3).tolist()} "
+                f"(robot calib ref L={np.round(official_base_positions[0:3], 3).tolist()} "
                 f"R={np.round(official_base_positions[3:6], 3).tolist()})"
             )
         elif kind == "sync":
@@ -1735,7 +1924,14 @@ def main():
         if calib_session.hold_kind == "full":
             calib_session.full_done = True
             calib_session.phase = CalibPhase.READY
-            print("CALIB_FULL done. Press ] to engage policy and wait for balance, then S then T.")
+            official_base_positions = default_official_base_positions(args)
+            official_base_orientations = configured_robot_init_orientations(args)
+            print(
+                "CALIB_FULL done. Press ] to engage policy and wait for balance, then S then T.",
+                f"Stand-hold will use {args.robot_init_pose} "
+                f"(L={np.round(official_base_positions[0:3], 3).tolist()} "
+                f"R={np.round(official_base_positions[3:6], 3).tolist()}).",
+            )
         elif calib_session.hold_kind == "sync":
             calib_session.sync_done = True
             calib_session.phase = CalibPhase.ENGAGED if not live_teleop else CalibPhase.TELEOP
@@ -1760,7 +1956,7 @@ def main():
                     if args.mapping_mode != "official-calib":
                         official_calibration = capture_official_calibration(tracking, args)
                     official_base_positions = default_official_base_positions(args)
-                    official_base_orientations = default_official_base_orientations()
+                    official_base_orientations = default_official_base_orientations(args)
                     print("AVP tracking locked.")
                     print(
                         "Robot base target: left=",
@@ -1827,6 +2023,7 @@ def main():
                             calib_session.phase = CalibPhase.ENGAGED
                             state.set_idle()
                             state.facing_angle = 0.0
+                            calib_session.sync_ramp_active = False
                             print(
                                 "\nENGAGE: policy started (stand-hold). "
                                 "Wait for balance, align arms to robot, press S for CALIB_SYNC."
@@ -1840,6 +2037,24 @@ def main():
                                 print("\nDo CALIB_FULL (F) first.")
                                 continue
                             begin_calib_hold("sync")
+                            if not args.no_sync_ramp:
+                                calib_session.sync_ramp_active = True
+                                stand_hold = False
+                                feedback = feedback_client.latest() if feedback_client is not None else None
+                                if (
+                                    feedback is not None
+                                    and feedback.vr_position is not None
+                                    and feedback.vr_orientation is not None
+                                ):
+                                    smoother.seed(feedback.vr_position, now)
+                                    orientation_smoother.seed(feedback.vr_orientation, now)
+                                else:
+                                    seed_arm_smoothers_from_last(now)
+                                begin_transition_ramp(
+                                    now,
+                                    reason="CALIB_SYNC started — ramping from current pose to forearms-forward",
+                                    reseed=False,
+                                )
                             continue
                         if key in ("t", "T"):
                             if not policy_started:
@@ -1858,7 +2073,9 @@ def main():
                             stand_hold = False
                             live_teleop = True
                             calib_session.paused = False
+                            calib_session.sync_ramp_active = False
                             calib_session.phase = CalibPhase.TELEOP
+                            begin_transition_ramp(now, reason="TELEOP start")
                             if head_pose is not None and head_loco_calib_pos is None:
                                 apply_loco_sync(head_pose)
                             msg = "TELEOP live: AVP hands + head walk/squat."
@@ -1882,6 +2099,7 @@ def main():
                             else:
                                 calib_session.phase = CalibPhase.TELEOP
                                 stand_hold = False
+                                begin_transition_ramp(now, reason="Resumed from PAUSE")
                                 print("\nResumed teleop.")
                             continue
 
@@ -1908,6 +2126,8 @@ def main():
                             policy_started = True
                         stand_hold = False
                         live_teleop = True
+                        calib_session.sync_ramp_active = False
+                        begin_transition_ramp(now, reason="TELEOP start")
                         if head_pose is not None:
                             apply_loco_sync(head_pose)
                         msg = "Teleop enabled: AVP hands drive upper body."
@@ -1929,7 +2149,7 @@ def main():
                                     pending_base_orientations = official_base_orientations.copy()
                             else:
                                 pending_base_positions = default_official_base_positions(args)
-                                pending_base_orientations = default_official_base_orientations()
+                                pending_base_orientations = default_official_base_orientations(args)
 
                             official_base_positions = pending_base_positions.copy()
                             official_base_orientations = pending_base_orientations.copy()
@@ -2131,7 +2351,7 @@ def main():
                 target_debug = {}
                 left_wrist_joints = None
                 right_wrist_joints = None
-                if stand_hold:
+                if stand_hold and not calib_session.sync_ramp_active:
                     targets = (
                         official_base_positions.copy(),
                         official_base_orientations.copy(),
@@ -2157,12 +2377,13 @@ def main():
                             official_base_orientations,
                             args,
                             force_base=(
-                                now < calib_hold_until
+                                (now < calib_hold_until and not calib_session.sync_ramp_active)
                                 or calib_session.paused
                                 or (
                                     args.staged_calib
                                     and args.mapping_mode == "official-calib"
                                     and not live_teleop
+                                    and not calib_session.sync_ramp_active
                                 )
                             ),
                         )
@@ -2185,17 +2406,25 @@ def main():
                         targets = (vr_position, vr_orientation)
                 if targets is not None and policy_started:
                     vr_position, vr_orientation = targets
-                    if (
+                    should_smooth = (
                         args.mapping_mode in ("hybrid", "official-calib")
                         and not args.legacy_head_relative
-                        and live_teleop
                         and not calib_session.paused
-                    ):
+                        and now >= calib_hold_until
+                    )
+                    if should_smooth:
+                        max_speed, max_ang, pos_tau, orn_tau = arm_motion_limits(now)
                         vr_position = smoother.update(
                             vr_position,
                             now,
-                            tau=args.hybrid_smoothing_tau,
-                            max_speed=args.hybrid_max_speed,
+                            tau=pos_tau,
+                            max_speed=max_speed,
+                        )
+                        vr_orientation = orientation_smoother.update(
+                            vr_orientation,
+                            now,
+                            tau=orn_tau,
+                            max_angular_speed=max_ang,
                         )
                     last_sent_vr_position = vr_position.copy()
                     last_sent_vr_orientation = vr_orientation.copy()
