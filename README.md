@@ -1,198 +1,146 @@
-# VisionPro G1 Inspire Teleop
+# Vision Pro → Unitree G1 Teleoperation
 
-Apple Vision Pro teleoperation scripts for controlling a Unitree G1 right arm and an Inspire dexterous hand.
+Apple Vision Pro teleoperation for **Unitree G1** + **Inspire hand**, using **SONIC** ([GR00T-WholeBodyControl](https://github.com/NVIDIA/GR00T-WholeBodyControl)).
 
-This repository contains the control entrypoints, the improved AVP-to-Inspire hand mapping algorithm, requirements, and installation notes. It intentionally does not vendor the large Unitree, VisionProTeleop, or Inspire SDK trees; those are installed or referenced as external dependencies.
+Core logic lives in the Python package **`g1_teleop/`**.  
+Shell entry points are the **`run_*.sh`** scripts in the repo root (same as `./bin/*.sh` — see [Which script to run?](#which-script-to-run) below).
 
-## What Is Included
+---
 
-Library code lives in the **`g1_teleop/`** Python package. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module layout, data flow, and calibration workflow.
-
-Install the package in editable mode (recommended for development):
-
-```bash
-pip install -e .
-```
-
-Entry scripts in `scripts/` are thin wrappers for shell launchers (`run_*.sh`).
-
-- `g1_teleop/hand/mapping.py` (shim: `scripts/avp_inspire_hand_mapping.py`)  
-  Improved hand mapping algorithm. It maps AVP hand skeleton joint geometry to six Inspire hand angle channels:
-
-  ```text
-  [little, ring, middle, index, thumb_bend, thumb_root_rotation]
-  ```
-
-- `scripts/visionpro_g1_right_arm_hand.py`  
-  Main teleop script. It receives Vision Pro tracking data, computes the G1 right-arm IK target, and publishes Inspire hand DDS commands.
-
-- `g1_teleop/bridge/` (entry: `scripts/avp_to_sonic_zmq.py`, `scripts/g1_avp_sonic_teleop.py`)  
-  SONIC whole-body AVP bridge: staged calibration, head locomotion with IMU closed-loop yaw, MuJoCo FPV.
-
-- `g1_teleop/locomotion/head.py`  
-  Head-driven walk / facing / squat planner commands.
-
-- `g1_teleop/calibration/session.py`  
-  F/]/S/T calibration session and ZMQ deploy feedback.
-
-- `scripts/Headless_driver_r.py`  
-  Inspire hand Modbus driver. It subscribes to DDS control commands and writes them to the physical hand.
-
-- `docs/VISIONPRO_G1_HAND_USAGE.md`  
-  Field usage guide in Chinese, including startup order, calibration, thumb direction correction, and troubleshooting.
-
-## Dependency Layout
-
-The scripts expect these external SDK directories. Defaults match the current robot workstation:
+## Install (once)
 
 ```bash
-export UNITREE_SIM_ROOT=/mnt/newssd/unitree_sim_isaaclab
-export UNITREE_SDK2_ROOT=/mnt/newssd/unitree_sim_isaaclab/unitree_sdk2_python
-export XR_TELEOP_ROOT=/mnt/newssd/unitree_sim_isaaclab/xr_teleoperate
-export INSPIRE_HAND_SDK_ROOT=/mnt/newssd/unitree_sim_isaaclab/inspire_hand_ws/inspire_hand_sdk
-export VISIONPRO_TELEOP_ROOT=/mnt/newssd/unitree_sim_isaaclab/inspire_hand_ws/VisionProTeleop
-```
-
-If your SDKs live elsewhere, copy `.env.example` to `.env` and update the paths.
-
-Before running commands from a shell, load `.env` if you created one:
-
-```bash
-set -a
-source .env
-set +a
-```
-
-## Installation
-
-Recommended Python environment:
-
-```bash
-conda create -n inspire_clean python=3.10 -y
-conda activate inspire_clean
-```
-
-Install Pinocchio and core solver dependencies through conda-forge:
-
-```bash
-conda install -c conda-forge pinocchio casadi -y
-```
-
-Install Python requirements:
-
-```bash
+cp .env.example .env          # set GR00T_ROOT, SDK paths, SONIC_PYTHON
 pip install -r requirements.txt
-```
+pip install -e .
 
-Install local SDK packages:
-
-```bash
+# external SDKs (paths from .env)
 pip install -e "$VISIONPRO_TELEOP_ROOT"
 pip install -e "$UNITREE_SDK2_ROOT"
 pip install -e "$INSPIRE_HAND_SDK_ROOT"
-pip install -r "$XR_TELEOP_ROOT/requirements.txt"
+
+# MuJoCo sim only:
+./tools/setup_sonic_sim_venv.sh
 ```
 
-## Quick Start
+Vision Pro: open **Tracking Streamer → Start** on the same Wi‑Fi as the PC.
 
-Use two terminals.
+Operator keys (Terminal 3): **F** → **]** → **S** → **T** · **P** pause · **H** head zero · **o** stop  
+Details: [docs/OPERATIONS.md](docs/OPERATIONS.md)
 
-Terminal 1, start the Inspire hand driver:
+---
+
+## Workflow A — MuJoCo sim (walk + head locomotion)
+
+Same as before — three terminals:
 
 ```bash
-cd /mnt/newssd/visionpro-g1-inspire-teleop
+# Terminal 1
+./run_sonic_sim_loop.sh
 
-/mnt/newssd/conda_envs/inspire_clean/bin/python \
-  scripts/Headless_driver_r.py \
-  --ip 192.168.123.211 \
-  --lr l \
-  --device-id 1
+# Terminal 2
+./run_sonic_deploy.sh
+
+# Terminal 3
+./run_sonic_avp_teleop.sh <VISION_PRO_IP_OR_ROOM_CODE>
+# example:
+./run_sonic_avp_teleop.sh 192.168.2.14
 ```
 
-Terminal 2, tune only the hand:
+MuJoCo tip: after **]**, press **9** in the sim window if the robot hangs in the air.  
+MuJoCo FPV in the headset is **on by default** (sim camera → Vision Pro).
+
+---
+
+## Workflow B — MuJoCo sim pick-up (walk + hands + **simulated Inspire fingers**)
+
+Table + cube scene; pinch in AVP to grasp in MuJoCo.
 
 ```bash
-cd /mnt/newssd/visionpro-g1-inspire-teleop
+# Terminal 1
+./run_sonic_sim_loop_pnp.sh
 
-/mnt/newssd/conda_envs/inspire_clean/bin/python \
-  scripts/visionpro_g1_right_arm_hand.py \
-  --dds-network enp3s0 \
-  --avp-endpoint 192.168.2.45 \
-  --disable-arm \
-  --print-debug
+# Terminal 2
+./run_sonic_deploy.sh
+
+# Terminal 3
+./run_sonic_avp_teleop_pick.sh <VISION_PRO_IP_OR_ROOM_CODE>
 ```
 
-Control right arm and hand together:
+Same **F → ] → S → T** flow; fingers drive the MuJoCo Inspire hand (not physical hardware).
+
+---
+
+## Workflow C — Real robot (no MuJoCo, no sim FPV)
+
+Two terminals only:
 
 ```bash
-/mnt/newssd/conda_envs/inspire_clean/bin/python \
-  scripts/visionpro_g1_right_arm_hand.py \
-  --dds-network enp3s0 \
-  --avp-endpoint 192.168.2.45 \
-  --print-debug
+# Terminal 1 — on robot network (set SONIC_NET_IF in .env if needed)
+./run_sonic_deploy.sh real
+
+# Terminal 2
+./run_sonic_avp_teleop.sh <VISION_PRO_IP> --no-mujoco-fpv
+# example:
+./run_sonic_avp_teleop.sh 192.168.2.14 --no-mujoco-fpv
 ```
 
-## First-Time Hand Calibration
+`--no-mujoco-fpv` turns off sim camera streaming (there is no MuJoCo on real hardware).  
+Physical Inspire hand on the robot uses a separate DDS driver — not covered in these three workflows.
 
-Run calibration once for your hand:
+---
+
+## Which script to run?
+
+| You used to run… | Same thing as… | What it does |
+|------------------|----------------|--------------|
+| `./run_sonic_sim_loop.sh` | `./bin/sonic-sim.sh` | MuJoCo sim (Terminal 1) |
+| `./run_sonic_sim_loop_pnp.sh` | `./bin/sonic-sim-pick.sh` | MuJoCo pick-up scene |
+| `./run_sonic_deploy.sh` | `./bin/sonic-deploy.sh` | SONIC policy (Terminal 2) |
+| `./run_sonic_deploy.sh real` | `./bin/sonic-deploy.sh real` | Real robot deploy |
+| `./run_sonic_avp_teleop.sh …` | `./bin/sonic-teleop.sh …` | AVP bridge (Terminal 3) |
+| `./run_sonic_avp_teleop_pick.sh …` | `./bin/sonic-teleop-pick.sh …` | AVP bridge + sim fingers |
+
+Root `run_*.sh` files are **one-line wrappers** that call `bin/`.  
+**You can keep using `run_*.sh` exactly as in your old notes** — nothing changed in behavior.
+
+Extra args (e.g. `--no-mujoco-fpv`, `--loco-max-speed 0.4`) go at the end of Terminal 3:
 
 ```bash
-/mnt/newssd/conda_envs/inspire_clean/bin/python \
-  scripts/visionpro_g1_right_arm_hand.py \
-  --dds-network enp3s0 \
-  --avp-endpoint 192.168.2.45 \
-  --disable-arm \
-  --calibrate-hand \
-  --print-debug
+./run_sonic_avp_teleop.sh 192.168.2.14 --no-mujoco-fpv --print-debug
 ```
 
-The script samples two poses:
+---
 
-1. Fully open hand.
-2. Closed grasp/fist with thumb opposition.
+## Repo layout (for developers)
 
-It saves:
+| Path | Purpose |
+|------|---------|
+| `g1_teleop/` | Library: transforms, hand map, calibration, head walk + IMU loop, SONIC bridge |
+| `run_*.sh` | **Start here** (user-facing) |
+| `bin/` | Implementation of `run_*.sh` |
+| `scripts/` | Python entry (`g1_avp_sonic_teleop.py`, etc.) |
+| `tools/` | `setup_sonic_sim_venv.sh`, scene generation |
+| `docs/ARCHITECTURE.md` | Module design |
+| `legacy/` | Old Isaac Sim stack — not used in the workflows above |
 
-```text
-scripts/visionpro_right_hand_calibration.json
-```
+---
 
-This file is ignored by git because it is machine/operator-specific.
+## Head locomotion + IMU
 
-## Thumb Direction Fix
+Head motion drives walk/turn; base IMU closes the yaw loop so direction is correct regardless of robot heading at calibration.  
+Disable: `--no-loco-imu-correction` · Tune: `--loco-imu-yaw-gain`, `--loco-velocity-deadzone 0.07`
 
-If your thumb rotates inward while the robot thumb rotates outward, add:
+---
 
-```bash
---invert-thumb-rotation-command
-```
+## More docs
 
-Example:
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — calibration steps, troubleshooting  
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — code structure  
+- [docs/VISIONPRO_G1_HAND_USAGE.md](docs/VISIONPRO_G1_HAND_USAGE.md) — arm + physical Inspire hand only (separate from SONIC whole-body)
 
-```bash
-/mnt/newssd/conda_envs/inspire_clean/bin/python \
-  scripts/visionpro_g1_right_arm_hand.py \
-  --dds-network enp3s0 \
-  --avp-endpoint 192.168.2.45 \
-  --disable-arm \
-  --print-debug \
-  --invert-thumb-rotation-command
-```
+---
 
-## More Documentation
+## External dependencies (not in this repo)
 
-See [docs/VISIONPRO_G1_HAND_USAGE.md](docs/VISIONPRO_G1_HAND_USAGE.md) for the detailed Chinese usage guide.
-
-## SONIC Whole-Body Sim (MuJoCo + Vision Pro)
-
-Three-terminal sim2sim using [GR00T-WholeBodyControl](https://github.com/NVIDIA/GR00T-WholeBodyControl) GEAR-SONIC:
-
-```bash
-./scripts/setup_sonic_sim_venv.sh   # once
-./run_sonic_sim_loop.sh             # Terminal 1 — MuJoCo (press 9 to drop elastic band)
-./run_sonic_deploy.sh               # Terminal 2 — policy deploy
-./run_sonic_avp_teleop.sh <VP_IP>   # Terminal 3 — AVP bridge
-```
-
-Operator flow: calibrate (`c`) → stand-hold (`]`) → teleop + head walk (`T`).  
-See [command.txt](command.txt) for tuning flags (default `--loco-velocity-deadzone` is 0.07).
+VisionProTeleop, `unitree_sdk2_python`, `inspire_hand_sdk`, GR00T-WholeBodyControl — configure paths in `.env`.

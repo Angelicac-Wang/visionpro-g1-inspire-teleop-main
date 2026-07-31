@@ -8,7 +8,7 @@ set -euo pipefail
 #   ~/.config/visionpro-g1-inspire-teleop/venv_sonic_sim
 # and runs gear_sonic via PYTHONPATH (no editable install into GR00T).
 #
-# Usage: ./scripts/setup_sonic_sim_venv.sh
+# Usage: ./tools/setup_sonic_sim_venv.sh
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GR00T_ROOT="${GR00T_ROOT:-/mnt/newssd/GR00T-WholeBodyControl}"
@@ -57,6 +57,6 @@ SONIC sim venv ready:
 
 Run:
   cd ${REPO_ROOT}
-  ./run_sonic_sim_loop.sh
+  ./bin/sonic-sim.sh
 
 EOF

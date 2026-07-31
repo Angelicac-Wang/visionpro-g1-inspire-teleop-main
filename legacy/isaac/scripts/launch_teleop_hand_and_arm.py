@@ -10,7 +10,7 @@ import runpy
 import sys
 import time
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 XR_TELEOP_ROOT = os.environ.get(
     "XR_TELEOP_ROOT",
     "/mnt/newssd/unitree_sim_isaaclab/xr_teleoperate",
@@ -192,8 +192,8 @@ class _HeadLoco:
     def __init__(self):
         import numpy as np
 
-        sys.path.insert(0, SCRIPT_DIR)
-        from g1_head_locomotion import (
+        sys.path.insert(0, REPO_ROOT)
+        from g1_teleop.locomotion.head import (
             HeadLocomotionConfig,
             HeadLocomotionState,
             compute_head_locomotion_velocity,

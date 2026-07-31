@@ -62,7 +62,7 @@ class MujocoFpvStreamer:
             if now - self._last_warn > 5.0:
                 print(
                     "[mujoco_fpv] Waiting for MuJoCo camera frames. "
-                    "Start Terminal 1 with SONIC_ENABLE_FPV=1 ./run_sonic_sim_loop.sh"
+                    "Start Terminal 1 with SONIC_ENABLE_FPV=1 ./bin/sonic-sim.sh"
                 )
                 self._last_warn = now
             return False

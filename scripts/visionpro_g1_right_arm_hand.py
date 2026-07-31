@@ -25,6 +25,8 @@ if INSPIRE_HAND_SDK_ROOT not in sys.path:
     sys.path.insert(0, INSPIRE_HAND_SDK_ROOT)
 if VISIONPRO_TELEOP_ROOT not in sys.path:
     sys.path.insert(0, VISIONPRO_TELEOP_ROOT)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import pinocchio as pin
@@ -41,7 +43,7 @@ from teleop.robot_control.robot_arm_ik import G1_29_ArmIK
 
 from inspire_sdkpy import inspire_dds, inspire_hand_defaut
 
-from avp_inspire_hand_mapping import (
+from g1_teleop.hand.mapping import (
     HandCalibration,
     InspireHandMapper,
     format_debug as format_hand_debug,
