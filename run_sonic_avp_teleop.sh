@@ -60,6 +60,7 @@ Operator:
 EOF
 
 cd "${REPO_ROOT}"
+export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 exec "${PYTHON}" scripts/g1_avp_sonic_teleop.py \
   --avp-endpoint "${AVP_ENDPOINT}" \
   --print-debug \

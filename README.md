@@ -6,15 +6,34 @@ This repository contains the control entrypoints, the improved AVP-to-Inspire ha
 
 ## What Is Included
 
-- `scripts/visionpro_g1_right_arm_hand.py`  
-  Main teleop script. It receives Vision Pro tracking data, computes the G1 right-arm IK target, and publishes Inspire hand DDS commands.
+Library code lives in the **`g1_teleop/`** Python package. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module layout, data flow, and calibration workflow.
 
-- `scripts/avp_inspire_hand_mapping.py`  
+Install the package in editable mode (recommended for development):
+
+```bash
+pip install -e .
+```
+
+Entry scripts in `scripts/` are thin wrappers for shell launchers (`run_*.sh`).
+
+- `g1_teleop/hand/mapping.py` (shim: `scripts/avp_inspire_hand_mapping.py`)  
   Improved hand mapping algorithm. It maps AVP hand skeleton joint geometry to six Inspire hand angle channels:
 
   ```text
   [little, ring, middle, index, thumb_bend, thumb_root_rotation]
   ```
+
+- `scripts/visionpro_g1_right_arm_hand.py`  
+  Main teleop script. It receives Vision Pro tracking data, computes the G1 right-arm IK target, and publishes Inspire hand DDS commands.
+
+- `g1_teleop/bridge/` (entry: `scripts/avp_to_sonic_zmq.py`, `scripts/g1_avp_sonic_teleop.py`)  
+  SONIC whole-body AVP bridge: staged calibration, head locomotion with IMU closed-loop yaw, MuJoCo FPV.
+
+- `g1_teleop/locomotion/head.py`  
+  Head-driven walk / facing / squat planner commands.
+
+- `g1_teleop/calibration/session.py`  
+  F/]/S/T calibration session and ZMQ deploy feedback.
 
 - `scripts/Headless_driver_r.py`  
   Inspire hand Modbus driver. It subscribes to DDS control commands and writes them to the physical hand.

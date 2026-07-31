@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "g1-teleop"
+version = "0.2.0"
+description = "Apple Vision Pro teleoperation for Unitree G1, Inspire hand, and SONIC whole-body control"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "scipy",
+  "pyzmq",
+  "msgpack",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["g1_teleop*"]
+
+[project.scripts]
+g1-avp-sonic-bridge = "g1_teleop.bridge.runtime:main"
