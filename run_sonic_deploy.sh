@@ -89,11 +89,16 @@ else
   EXTRA=()
 fi
 
+INIT_ARM_POSE="${SONIC_INIT_ARM_POSE:-forearms-forward}"
+POLICY_START_RAMP_SEC="${SONIC_POLICY_START_RAMP_SEC:-0.8}"
+
 cat <<EOF
 SONIC Terminal 2 — deploy (${TARGET_MODE})
   ZMQ subscriber: tcp://${ZMQ_HOST}:5556
+  INIT arm pose: ${INIT_ARM_POSE} (set SONIC_INIT_ARM_POSE=default to disable)
+  Policy start ramp: ${POLICY_START_RAMP_SEC}s upper-body blend (SONIC_POLICY_START_RAMP_SEC)
   Emergency stop in THIS terminal: press O
-  Wait for "Init done" before starting Terminal 3.
+  Start Terminal 3 early so L VR targets stream before you press ].
 EOF
 
 if [[ ! -x "${BINARY}" ]]; then
@@ -114,4 +119,6 @@ exec "${BINARY}" "${NET_IF}" "${CHECKPOINT_DECODER}" "${MOTION_DATA}" \
   --input-type "${INPUT_TYPE}" \
   --output-type "${OUTPUT_TYPE}" \
   --zmq-host "${ZMQ_HOST}" \
+  --init-arm-pose "${INIT_ARM_POSE}" \
+  --policy-start-ramp-sec "${POLICY_START_RAMP_SEC}" \
   "${EXTRA[@]}"

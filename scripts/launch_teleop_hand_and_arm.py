@@ -198,13 +198,17 @@ class _HeadLoco:
             HeadLocomotionState,
             compute_head_locomotion_velocity,
             head_pose_from_openxr,
+            horizontal_heading_from_calib_rot,
             reset_head_locomotion_state,
+            walk_vector_to_world_rot,
         )
 
         self._np = np
+        self._horizontal_heading_from_calib_rot = horizontal_heading_from_calib_rot
         self._compute_head_locomotion_velocity = compute_head_locomotion_velocity
         self._head_pose_from_openxr = head_pose_from_openxr
         self._reset_head_locomotion_state = reset_head_locomotion_state
+        self._walk_vector_to_world_rot = walk_vector_to_world_rot
         self._loco_state = HeadLocomotionState()
         self._loco_cfg = HeadLocomotionConfig(
             velocity_gain=float(os.environ.get("HEAD_LOCO_VELOCITY_GAIN", "1.0")),
@@ -464,9 +468,13 @@ class _HeadLoco:
         head_pose = self._head_pose_from_openxr(H)
         if self._calib_pos is None:
             self._calib_pos = head_pose[:3, 3].copy()
+            calib_rot = head_pose[:3, :3].copy()
+            calib_yaw = self._horizontal_heading_from_calib_rot(calib_rot)
+            self._reset_head_locomotion_state(self._loco_state, calib_rot=calib_rot)
             print(
                 "[xr_launcher] HEAD_LOCO calibrated at "
-                f"{self._np.round(self._calib_pos, 3).tolist()}",
+                f"{self._np.round(self._calib_pos, 3).tolist()} "
+                f"facing_yaw={calib_yaw:.3f} rad",
                 flush=True,
             )
 
@@ -477,11 +485,25 @@ class _HeadLoco:
             dt,
             calib_pos=self._calib_pos,
         )
+        calib_rot = self._loco_state.calib_rot
+        vel_wh = self._np.asarray(
+            self._loco_state.debug.get("vel_world_h") or [0.0, 0.0, 0.0],
+            dtype=float,
+        )
+        wh_norm = float(self._np.linalg.norm(vel_wh[:2]))
+        local_speed = float(self._np.hypot(vx, vy))
+        if calib_rot is not None:
+            if wh_norm > 1e-6 and local_speed > 1e-6:
+                wx, wy = (vel_wh[:2] / wh_norm * local_speed).tolist()
+            else:
+                wx, wy = self._walk_vector_to_world_rot(calib_rot, vx, vy)
+        else:
+            wx, wy = vx, vy
         debug = self._loco_state.debug
         raw_vel = debug.get("raw_vel") or [0.0, 0.0]
         self._publish(
-            vx,
-            vy,
+            wx,
+            wy,
             vyaw,
             now,
             "head/velocity",

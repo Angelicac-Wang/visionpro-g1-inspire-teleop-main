@@ -32,7 +32,7 @@ class HeadLocomotionConfig:
     max_yaw_rate: float = 0.35
     velocity_deadzone: float = 0.07
     lateral_velocity_deadzone: float = 0.035
-    lateral_displacement_gain: float = 2.2
+    lateral_displacement_gain: float = 0.0
     max_lateral_displacement: float = 0.12
     lateral_axis_ratio: float = 0.38
     lateral_strafe_min: float = 0.010
@@ -43,6 +43,10 @@ class HeadLocomotionConfig:
     output_deadzone: float = 0.04
     lateral_output_deadzone: float = 0.025
     idle_decay: float = 0.85
+    imu_yaw_enabled: bool = True
+    imu_yaw_gain: float = 1.0
+    imu_yaw_deadzone: float = 0.05
+    imu_yaw_max_correction: float = 0.45
 
 
 @dataclass
@@ -72,6 +76,8 @@ class HeadLocomotionState:
     smooth_pelvis_height: float = -1.0
     facing_angle: float = 0.0
     calib_yaw: float = 0.0
+    calib_rot: np.ndarray | None = None
+    robot_base_yaw_at_calib: float | None = None
     calibrated: bool = False
     debug: dict = field(default_factory=dict)
 
@@ -114,6 +120,168 @@ def head_delta_calib_frame(
     return rot.T @ delta_world
 
 
+def horizontal_delta_calib_yaw(
+    head_pose: np.ndarray,
+    calib_pos: np.ndarray,
+    calib_yaw: float,
+) -> np.ndarray:
+    """Horizontal head displacement in the F-calibration yaw frame (x=fwd, y=lat)."""
+    delta_world = head_pose[:3, 3] - calib_pos
+    delta_world[2] = 0.0
+    return rotation_z(-calib_yaw) @ delta_world
+
+
+def horizontal_velocity_calib_yaw(
+    vel_world: np.ndarray,
+    calib_yaw: float,
+) -> np.ndarray:
+    """Horizontal head velocity in the F-calibration yaw frame (x=fwd, y=lat)."""
+    vel = np.asarray(vel_world, dtype=np.float64).copy()
+    vel[2] = 0.0
+    return rotation_z(-calib_yaw) @ vel
+
+
+def horizontal_basis_from_calib_rot(calib_rot: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Unit forward/lateral axes on the ground plane from the F-calibration rotation."""
+    rot = np.asarray(calib_rot, dtype=np.float64)[:3, :3]
+    forward = rot[:, 0].copy()
+    forward[2] = 0.0
+    fn = float(np.linalg.norm(forward))
+    if fn < 1e-6:
+        forward = (-rot[:, 2]).copy()
+        forward[2] = 0.0
+        fn = float(np.linalg.norm(forward))
+    forward /= max(fn, 1e-6)
+    lateral = np.cross(np.array([0.0, 0.0, 1.0]), forward)
+    ln = float(np.linalg.norm(lateral))
+    if ln < 1e-6:
+        lateral = rot[:, 1].copy()
+        lateral[2] = 0.0
+        lateral /= max(float(np.linalg.norm(lateral)), 1e-6)
+    else:
+        lateral /= ln
+    return forward, lateral
+
+
+def horizontal_heading_from_calib_rot(calib_rot: np.ndarray) -> float:
+    """Ground-plane heading of the calibrated forward axis."""
+    forward, _ = horizontal_basis_from_calib_rot(calib_rot)
+    return float(np.arctan2(forward[1], forward[0]))
+
+
+def horizontal_velocity_calib_rot(
+    vel_world: np.ndarray,
+    calib_rot: np.ndarray,
+) -> np.ndarray:
+    """Horizontal velocity in the F-calibration walk frame (x=fwd, y=lat)."""
+    forward, lateral = horizontal_basis_from_calib_rot(calib_rot)
+    vel = np.asarray(vel_world, dtype=np.float64).copy()
+    vel[2] = 0.0
+    return np.array([np.dot(vel, forward), np.dot(vel, lateral), 0.0])
+
+
+def horizontal_delta_calib_rot(
+    head_pose: np.ndarray,
+    calib_pos: np.ndarray,
+    calib_rot: np.ndarray,
+) -> np.ndarray:
+    """Horizontal head displacement in the F-calibration walk frame."""
+    delta_world = head_pose[:3, 3] - calib_pos
+    delta_world[2] = 0.0
+    forward, lateral = horizontal_basis_from_calib_rot(calib_rot)
+    return np.array(
+        [np.dot(delta_world, forward), np.dot(delta_world, lateral), 0.0],
+        dtype=np.float64,
+    )
+
+
+def walk_vector_to_world(calib_yaw: float, vx: float, vy: float) -> tuple[float, float]:
+    """Map walk-frame (vx forward, vy lateral) to world XY using F-calib yaw."""
+    c = np.cos(calib_yaw)
+    s = np.sin(calib_yaw)
+    return c * vx - s * vy, s * vx + c * vy
+
+
+def walk_vector_to_world_rot(calib_rot: np.ndarray, vx: float, vy: float) -> tuple[float, float]:
+    """Map walk-frame (vx forward, vy lateral) to world XY using F-calib rotation."""
+    forward, lateral = horizontal_basis_from_calib_rot(calib_rot)
+    world = forward * vx + lateral * vy
+    return float(world[0]), float(world[1])
+
+
+def _calib_rot_or_yaw(state: HeadLocomotionState) -> np.ndarray:
+    if state.calib_rot is not None:
+        return state.calib_rot
+    return rotation_z(state.calib_yaw)
+
+
+def horizontal_yaw_from_quat_wxyz(quat: np.ndarray) -> float:
+    """Ground-plane heading from a base/torso IMU quaternion (w, x, y, z)."""
+    q = np.asarray(quat, dtype=np.float64).reshape(4)
+    w, x, y, z = q
+    rot = R.from_quat([x, y, z, w]).as_matrix()
+    return horizontal_heading_from_calib_rot(rot)
+
+
+def _deadband_angle(angle: float, deadzone: float) -> float:
+    if abs(angle) <= deadzone:
+        return 0.0
+    return angle - deadzone if angle > 0.0 else angle + deadzone
+
+
+def apply_imu_yaw_closed_loop(
+    facing_angle: float,
+    state: HeadLocomotionState,
+    cfg: HeadLocomotionConfig,
+    base_quat: np.ndarray | None,
+) -> tuple[float, dict]:
+    """Close the loop between commanded facing and measured base IMU yaw.
+
+    Returns corrected facing angle (rad, calib-relative) and debug fields.
+    """
+    debug: dict = {
+        "imu_active": False,
+        "robot_yaw_rel": None,
+        "yaw_err": None,
+        "facing_corr": 0.0,
+    }
+    if (
+        not cfg.imu_yaw_enabled
+        or base_quat is None
+        or state.robot_base_yaw_at_calib is None
+    ):
+        return facing_angle, debug
+
+    robot_yaw = horizontal_yaw_from_quat_wxyz(base_quat)
+    robot_yaw_rel = wrap_to_pi(robot_yaw - state.robot_base_yaw_at_calib)
+    yaw_err = wrap_to_pi(facing_angle - robot_yaw_rel)
+    yaw_err_db = _deadband_angle(yaw_err, cfg.imu_yaw_deadzone)
+    facing_corr = float(
+        np.clip(cfg.imu_yaw_gain * yaw_err_db, -cfg.imu_yaw_max_correction, cfg.imu_yaw_max_correction)
+    )
+    corrected = wrap_to_pi(facing_angle + facing_corr)
+    debug.update(
+        {
+            "imu_active": True,
+            "robot_yaw_rel": round(robot_yaw_rel, 3),
+            "yaw_err": round(yaw_err, 3),
+            "facing_corr": round(facing_corr, 3),
+            "facing_out": round(corrected, 3),
+        }
+    )
+    return corrected, debug
+
+
+def _loco_axes_from_yaw_velocity(
+    vel_local: np.ndarray,
+    cfg: HeadLocomotionConfig,
+) -> tuple[float, float]:
+    """Map yaw-stabilized horizontal velocity to (forward vx, lateral vy)."""
+    vx = cfg.velocity_gain * cfg.forward_scale * cfg.sign_x * float(vel_local[0])
+    vy = cfg.velocity_gain * cfg.lateral_scale * cfg.sign_y * float(vel_local[1])
+    return vx, vy
+
+
 def compute_head_locomotion_velocity(
     head_pose: np.ndarray,
     state: HeadLocomotionState,
@@ -121,9 +289,8 @@ def compute_head_locomotion_velocity(
     dt: float,
     *,
     calib_pos: np.ndarray,
-    calib_rot: np.ndarray | None = None,
 ) -> tuple[float, float, float]:
-    """Return (vx, vy, vyaw) in robot-base frame from head motion derivative."""
+    """Return (vx, vy, vyaw) in the F-calibration yaw walk frame (velocity only)."""
     pos = head_pose[:3, 3]
     yaw = yaw_from_rot(head_pose[:3, :3])
 
@@ -134,57 +301,60 @@ def compute_head_locomotion_velocity(
         state.debug = {
             "delta_body": [0.0, 0.0, 0.0],
             "raw_vel": [0.0, 0.0],
-            "vy_disp": 0.0,
             "raw_vyaw": 0.0,
         }
         return 0.0, 0.0, 0.0
 
     vel_world = (pos - state.prev_head_pos) / max(dt, 1e-6)
+    vel_world[2] = 0.0
     yaw_rate = wrap_to_pi(yaw - state.prev_head_yaw) / max(dt, 1e-6)
     state.prev_head_pos = pos.copy()
     state.prev_head_yaw = yaw
 
-    if calib_rot is not None:
-        # Walk in the calibrated head frame (stable; independent of yaw extraction).
-        vel_local = np.asarray(calib_rot, dtype=np.float64)[:3, :3].T @ vel_world
-    else:
-        vel_local = rotation_z(-yaw) @ vel_world
-    vx = cfg.velocity_gain * cfg.forward_scale * cfg.sign_x * float(vel_local[0])
-    vy = cfg.velocity_gain * cfg.lateral_scale * cfg.sign_y * float(vel_local[1])
+    calib_rot = _calib_rot_or_yaw(state)
+    vel_local = horizontal_velocity_calib_rot(vel_world, calib_rot)
+    vx, vy = _loco_axes_from_yaw_velocity(vel_local, cfg)
+    delta_body = horizontal_delta_calib_rot(head_pose, calib_pos, calib_rot)
+    vel_world_h = vel_world.copy()
+    vel_world_h[2] = 0.0
+    delta_body[2] = 0.0
     vy_disp = 0.0
-    lat_disp = 0.0
+    vx_disp = 0.0
     strafe_intent = False
+    forward_intent = False
 
-    if calib_rot is not None:
-        delta_body = head_delta_calib_frame(head_pose, calib_pos, calib_rot)
-        lat_disp = float(np.clip(delta_body[0], -cfg.max_lateral_displacement, cfg.max_lateral_displacement))
-        fwd_disp = abs(float(delta_body[2]))
-        strafe_intent = abs(lat_disp) >= max(cfg.lateral_strafe_min, fwd_disp * cfg.lateral_axis_ratio)
+    if cfg.lateral_displacement_gain > 0.0:
+        lat_disp = float(np.clip(delta_body[1], -cfg.max_lateral_displacement, cfg.max_lateral_displacement))
+        fwd_disp = float(np.clip(delta_body[0], -cfg.max_lateral_displacement, cfg.max_lateral_displacement))
+        strafe_intent = abs(lat_disp) >= cfg.lateral_strafe_min
+        forward_intent = abs(fwd_disp) >= cfg.lateral_strafe_min
         if strafe_intent:
             vy_disp = cfg.lateral_displacement_gain * cfg.sign_y * lat_disp
             vy += vy_disp
-    else:
-        delta_body = head_delta_yaw_compensated(head_pose, calib_pos)
+        if forward_intent:
+            vx_disp = cfg.lateral_displacement_gain * cfg.sign_x * fwd_disp
+            vx += vx_disp
+
+        if (
+            not strafe_intent
+            and abs(vx) >= cfg.velocity_deadzone
+            and abs(vy) < cfg.lateral_coupling_suppress
+        ):
+            vy = 0.0
 
     if vy > 0.0:
         vy *= cfg.lateral_left_scale
     elif vy < 0.0:
         vy *= cfg.lateral_right_scale
 
-    # Drop weak lateral coupling during forward/back, but keep strafe when head shifts sideways.
-    if (
-        not strafe_intent
-        and abs(vx) >= cfg.velocity_deadzone
-        and abs(vy) < cfg.lateral_coupling_suppress
-    ):
-        vy = 0.0
-
     vyaw = cfg.yaw_rate_gain * yaw_rate
 
-    if abs(vx) < cfg.velocity_deadzone:
+    move_speed = float(np.hypot(vx, vy))
+    if move_speed < cfg.velocity_deadzone:
         vx = 0.0
+        vy = 0.0
     lat_dz = cfg.lateral_velocity_deadzone
-    if abs(vy) < lat_dz:
+    if abs(vy) < lat_dz and vx == 0.0:
         vy = 0.0
     if abs(vyaw) < cfg.yaw_rate_deadzone:
         vyaw = 0.0
@@ -206,12 +376,10 @@ def compute_head_locomotion_velocity(
     out_vyaw = float(np.clip(state.smooth_vyaw, -cfg.max_yaw_rate, cfg.max_yaw_rate))
 
     out_dz = float(getattr(cfg, "output_deadzone", cfg.velocity_deadzone))
-    lat_out_dz = float(getattr(cfg, "lateral_output_deadzone", out_dz))
-    if abs(out_vx) < out_dz:
+    if float(np.hypot(out_vx, out_vy)) < out_dz:
         out_vx = 0.0
-        state.smooth_vx = 0.0
-    if abs(out_vy) < lat_out_dz:
         out_vy = 0.0
+        state.smooth_vx = 0.0
         state.smooth_vy = 0.0
     if abs(out_vyaw) < out_dz:
         out_vyaw = 0.0
@@ -219,12 +387,17 @@ def compute_head_locomotion_velocity(
 
     state.debug = {
         "delta_body": np.round(delta_body, 3).tolist(),
+        "vel_local": np.round(vel_local, 3).tolist(),
+        "vel_world_h": np.round(vel_world_h, 3).tolist(),
         "raw_vel": np.round([vx, vy], 3).tolist(),
         "vy_disp": round(vy_disp, 3),
+        "vx_disp": round(vx_disp, 3),
         "raw_vyaw": round(float(yaw_rate), 3),
         "cmd": np.round([out_vx, out_vy, out_vyaw], 3).tolist(),
-        "lat_disp": round(lat_disp, 3),
         "strafe_intent": strafe_intent,
+        "forward_intent": forward_intent,
+        "head_yaw": round(float(yaw), 3),
+        "calib_yaw": round(float(state.calib_yaw), 3),
         "sign": [cfg.sign_x, cfg.sign_y],
     }
     return out_vx, out_vy, out_vyaw
@@ -237,8 +410,8 @@ def compute_sonic_planner_command(
     dt: float,
     *,
     calib_pos: np.ndarray,
-    calib_rot: np.ndarray | None = None,
     locomotion_mode: int = 1,
+    robot_base_quat: np.ndarray | None = None,
 ) -> SonicPlannerCommand:
     """Map head motion to SONIC planner movement/facing vectors.
 
@@ -246,13 +419,23 @@ def compute_sonic_planner_command(
     facing (body/head heading). Do NOT set facing from arctan2(vy, vx) or the
     robot turns around instead of walking backward.
     """
-    head_yaw = yaw_from_rot(head_pose[:3, :3])
-    target_facing = wrap_to_pi(head_yaw - state.calib_yaw)
+    calib_rot = _calib_rot_or_yaw(state)
+    head_rot = head_pose[:3, :3]
+    target_facing = wrap_to_pi(
+        horizontal_heading_from_calib_rot(head_rot)
+        - horizontal_heading_from_calib_rot(calib_rot)
+    )
     fac_alpha = float(np.clip(cfg.facing_smooth_alpha, 0.05, 1.0))
     state.facing_angle = wrap_to_pi(
         state.facing_angle + fac_alpha * wrap_to_pi(target_facing - state.facing_angle)
     )
-    facing = _facing_from_angle(state.facing_angle)
+    facing_angle, imu_debug = apply_imu_yaw_closed_loop(
+        state.facing_angle,
+        state,
+        cfg,
+        robot_base_quat,
+    )
+    facing = _facing_from_angle(facing_angle)
 
     idle = SonicPlannerCommand(
         mode=0,
@@ -267,26 +450,24 @@ def compute_sonic_planner_command(
         cfg,
         dt,
         calib_pos=calib_pos,
-        calib_rot=calib_rot,
     )
+    state.debug["imu"] = imu_debug
 
-    if calib_rot is not None:
-        world_vel = np.asarray(calib_rot, dtype=np.float64)[:3, :3] @ np.array(
-            [vx, vy, 0.0], dtype=np.float64
-        )
-        wx, wy = float(world_vel[0]), float(world_vel[1])
-    else:
-        cos_y = np.cos(head_yaw)
-        sin_y = np.sin(head_yaw)
-        wx = cos_y * vx - sin_y * vy
-        wy = sin_y * vx + cos_y * vy
     local_speed = float(np.hypot(vx, vy))
     lat_dz = float(getattr(cfg, "lateral_velocity_deadzone", cfg.velocity_deadzone))
 
     forward_active = abs(vx) >= cfg.velocity_deadzone
     lateral_active = abs(vy) >= lat_dz
     if (forward_active or lateral_active) and local_speed > 1e-6:
-        movement = np.array([wx / local_speed, wy / local_speed, 0.0], dtype=np.float64)
+        vel_wh = np.asarray(state.debug.get("vel_world_h") or [0.0, 0.0, 0.0], dtype=np.float64)
+        wh_norm = float(np.linalg.norm(vel_wh[:2]))
+        if wh_norm > 1e-6:
+            movement_xy = vel_wh[:2] / wh_norm
+        else:
+            wx, wy = walk_vector_to_world_rot(calib_rot, vx, vy)
+            movement_xy = np.array([wx, wy], dtype=np.float64)
+            movement_xy /= max(float(np.linalg.norm(movement_xy)), 1e-6)
+        movement = np.array([movement_xy[0], movement_xy[1], 0.0], dtype=np.float64)
         return SonicPlannerCommand(
             mode=locomotion_mode,
             movement=movement,
@@ -373,14 +554,26 @@ def update_facing_from_head(
     head_pose: np.ndarray,
     state: HeadLocomotionState,
     cfg: HeadLocomotionConfig,
+    *,
+    robot_base_quat: np.ndarray | None = None,
 ) -> np.ndarray:
-    head_yaw = yaw_from_rot(head_pose[:3, :3])
-    target_facing = wrap_to_pi(head_yaw - state.calib_yaw)
+    calib_rot = _calib_rot_or_yaw(state)
+    target_facing = wrap_to_pi(
+        horizontal_heading_from_calib_rot(head_pose[:3, :3])
+        - horizontal_heading_from_calib_rot(calib_rot)
+    )
     fac_alpha = float(np.clip(cfg.facing_smooth_alpha, 0.05, 1.0))
     state.facing_angle = wrap_to_pi(
         state.facing_angle + fac_alpha * wrap_to_pi(target_facing - state.facing_angle)
     )
-    return _facing_from_angle(state.facing_angle)
+    facing_angle, imu_debug = apply_imu_yaw_closed_loop(
+        state.facing_angle,
+        state,
+        cfg,
+        robot_base_quat,
+    )
+    state.debug["imu"] = imu_debug
+    return _facing_from_angle(facing_angle)
 
 
 def _facing_from_angle(angle: float) -> np.ndarray:
@@ -391,6 +584,7 @@ def reset_head_locomotion_state(
     state: HeadLocomotionState,
     *,
     calib_yaw: float | None = None,
+    calib_rot: np.ndarray | None = None,
 ) -> None:
     state.prev_head_pos = None
     state.prev_head_yaw = None
@@ -400,6 +594,12 @@ def reset_head_locomotion_state(
     state.smooth_pelvis_height = -1.0
     state.calibrated = False
     state.debug = {}
-    if calib_yaw is not None:
+    state.robot_base_yaw_at_calib = None
+    if calib_rot is not None:
+        state.calib_rot = np.asarray(calib_rot, dtype=np.float64)[:3, :3].copy()
+        state.calib_yaw = horizontal_heading_from_calib_rot(state.calib_rot)
+        state.facing_angle = 0.0
+    elif calib_yaw is not None:
         state.calib_yaw = float(calib_yaw)
+        state.calib_rot = rotation_z(state.calib_yaw)
         state.facing_angle = 0.0

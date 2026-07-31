@@ -34,24 +34,23 @@ def main() -> None:
         argv.extend(["--arm-orientation-smoothing-tau", "0.14"])
     if "--arm-max-angular-speed" not in argv:
         argv.extend(["--arm-max-angular-speed", "1.8"])
+    if "--stand-hold-mode" not in argv:
+        argv.extend(["--stand-hold-mode", "init-pose"])
+    if "--stream-init-pose" not in argv and "--no-stream-init-pose" not in argv:
+        argv.append("--stream-init-pose")
+    if "--vr-ramp-max-speed" not in argv:
+        argv.extend(["--vr-ramp-max-speed", "0.08"])
+    if "--vr-ramp-max-angular-speed" not in argv:
+        argv.extend(["--vr-ramp-max-angular-speed", "0.9"])
     if "--wrist-rotation-scale" not in argv:
         argv.extend(["--wrist-rotation-scale", "0.55"])
-    if "--arm-transition-max-speed" not in argv:
-        argv.extend(["--arm-transition-max-speed", "0.08"])
-    if "--arm-transition-max-angular-speed" not in argv:
-        argv.extend(["--arm-transition-max-angular-speed", "0.5"])
-    if "--arm-transition-ramp-sec" not in argv:
-        argv.extend(["--arm-transition-ramp-sec", "6.0"])
-    if "--robot-init-pose" not in argv:
-        init_pose = os.environ.get("SONIC_ROBOT_INIT_POSE", "arms-down")
-        argv.extend(["--robot-init-pose", init_pose])
 
     sys.argv = argv
     print(f"[g1_avp_sonic_teleop] Running {BRIDGE}")
     print("[g1_avp_sonic_teleop] Flow: F -> ] -> S -> T  (CALIB_FULL / ENGAGE / SYNC / TELEOP)")
     print(
-        "[g1_avp_sonic_teleop] Arm smoothing + safe S/T transition ramp "
-        f"(transition max {0.08} m/s for 6s). Tune --arm-transition-max-speed."
+        "[g1_avp_sonic_teleop] L-shape workflow: deploy uses --init-arm-pose forearms-forward; "
+        "stand-hold=init-pose after ]. Use --stand-hold-mode track-robot for arms-down hold."
     )
     runpy.run_path(str(BRIDGE), run_name="__main__")
 

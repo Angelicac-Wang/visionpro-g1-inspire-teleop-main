@@ -1,7 +1,7 @@
 """AVP ↔ SONIC staged calibration (PICO VR_3PT aligned).
 
 Phases:
-  F  CALIB_FULL  — operator forearms-forward vs robot calib ref (stand-hold uses --robot-init-pose)
+  F  CALIB_FULL  — operator forearms-forward vs robot init pose
   ]  ENGAGE      — start policy, stand hold
   S  CALIB_SYNC  — wrists vs current robot (ZMQ feedback / optional FK)
   T  TELEOP      — live control (unified head/walk/squat zero)
@@ -21,6 +21,7 @@ import zmq
 from scipy.spatial.transform import Rotation as R
 
 from g1_avp_transforms import yaw_from_rot
+from g1_head_locomotion import horizontal_heading_from_calib_rot
 
 
 class CalibPhase(enum.Enum):
@@ -58,6 +59,9 @@ class FeedbackSnapshot:
     body_q: np.ndarray | None = None
     vr_position: np.ndarray | None = None
     vr_orientation: np.ndarray | None = None
+    base_quat: np.ndarray | None = None
+    body_torso_quat: np.ndarray | None = None
+    delta_heading: float | None = None
     monotonic_time: float = 0.0
 
 
@@ -69,7 +73,6 @@ class CalibSession:
     hold_deadline: float = 0.0
     hold_kind: str = ""
     paused: bool = False
-    sync_ramp_active: bool = False
     buffer: PoseFrameBuffer = field(default_factory=lambda: PoseFrameBuffer())
     last_quality: CalibQuality | None = None
 
@@ -246,10 +249,27 @@ class ZmqFeedbackClient:
         if "vr_3point_orientation" in data:
             vr_orn = np.asarray(data["vr_3point_orientation"], dtype=np.float64).reshape(12)
 
+        base_quat = None
+        for key in ("base_quat_measured", "base_quat"):
+            if key in data:
+                base_quat = np.asarray(data[key], dtype=np.float64).reshape(4)
+                break
+
+        body_torso_quat = None
+        if "body_torso_quat" in data:
+            body_torso_quat = np.asarray(data["body_torso_quat"], dtype=np.float64).reshape(4)
+
+        delta_heading = None
+        if "delta_heading" in data:
+            delta_heading = float(data["delta_heading"])
+
         return FeedbackSnapshot(
             body_q=body_q,
             vr_position=vr_pos,
             vr_orientation=vr_orn,
+            base_quat=base_quat,
+            body_torso_quat=body_torso_quat,
+            delta_heading=delta_heading,
             monotonic_time=time.monotonic(),
         )
 
@@ -318,6 +338,8 @@ def robot_base_from_feedback(
     fallback_positions: np.ndarray,
     fallback_orientations: np.ndarray,
     prefer_fk: bool = True,
+    last_sent_positions: np.ndarray | None = None,
+    last_sent_orientations: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, str]:
     """Return (positions9, orientations12, source_label)."""
     if (
@@ -329,6 +351,16 @@ def robot_base_from_feedback(
         fk_targets = fk_ref.vr_targets_from_body_q(feedback.body_q)
         if fk_targets is not None:
             return fk_targets[0].copy(), fk_targets[1].copy(), "fk(body_q)"
+
+    if (
+        last_sent_positions is not None
+        and last_sent_orientations is not None
+    ):
+        return (
+            np.asarray(last_sent_positions, dtype=np.float64).reshape(9).copy(),
+            np.asarray(last_sent_orientations, dtype=np.float64).reshape(12).copy(),
+            "last_sent_command",
+        )
 
     if feedback is not None and feedback.vr_position is not None and feedback.vr_orientation is not None:
         return (
@@ -434,11 +466,19 @@ def merge_calibration(
     return update
 
 
-def sync_loco_zeros(head_pose: np.ndarray, head_loco_state, reset_head_locomotion_state) -> tuple[np.ndarray, np.ndarray, float]:
+def sync_loco_zeros(
+    head_pose: np.ndarray,
+    head_loco_state,
+    reset_head_locomotion_state,
+    *,
+    robot_base_yaw: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, float]:
     calib_pos = head_pose[:3, 3].copy()
     calib_rot = head_pose[:3, :3].copy()
-    calib_yaw = yaw_from_rot(head_pose[:3, :3])
-    reset_head_locomotion_state(head_loco_state, calib_yaw=calib_yaw)
+    calib_yaw = horizontal_heading_from_calib_rot(calib_rot)
+    reset_head_locomotion_state(head_loco_state, calib_rot=calib_rot)
+    if robot_base_yaw is not None:
+        head_loco_state.robot_base_yaw_at_calib = float(robot_base_yaw)
     return calib_pos, calib_rot, calib_yaw
 
 

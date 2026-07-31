@@ -44,7 +44,6 @@ Operator flow (Terminal 3) — staged calibration (PICO VR_3PT aligned):
   1) Wait for AVP head tracking locked
   2) F — CALIB_FULL: stand straight, forearms-forward L-shape, hold ~2s (c = alias)
   3) ] — ENGAGE: start policy, wait until robot balances (MuJoCo: key 9)
-     Robot stays arms-down (same as real idle) until S
   4) S — CALIB_SYNC: align your arms to the robot's current pose, hold ~2s
   5) T — TELEOP: head walk/turn, squat (duck head), hands + fingers
   6) During session: P pause | H head facing/squat zero | S wrist re-sync to robot
