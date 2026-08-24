@@ -409,6 +409,30 @@ def parse_args():
         action="store_true",
         help="Drive SONIC walking from head motion (work-master velocity derivative).",
     )
+    parser.add_argument(
+        "--hybrid-locomotion",
+        action="store_true",
+        default=None,
+        help="Allow WASD keyboard walk while head locomotion is active (vector sum).",
+    )
+    parser.add_argument(
+        "--no-hybrid-locomotion",
+        dest="hybrid_locomotion",
+        action="store_false",
+        help="Disable keyboard walk overlay when --head-locomotion is enabled.",
+    )
+    parser.add_argument(
+        "--keyboard-loco-speed",
+        type=float,
+        default=0.42,
+        help="Walk speed (m/s) for keyboard overlay in hybrid locomotion.",
+    )
+    parser.add_argument(
+        "--eval-log",
+        default=None,
+        metavar="PATH",
+        help="Write Task A / REMS eval CSV (locomotion + IMU fields) to PATH.",
+    )
     parser.add_argument("--loco-velocity-gain", type=float, default=1.0)
     parser.add_argument("--loco-yaw-gain", type=float, default=0.9)
     parser.add_argument("--loco-forward-scale", type=float, default=1.0)
@@ -419,12 +443,12 @@ def parse_args():
     parser.add_argument("--loco-lateral-deadzone", type=float, default=0.035)
     parser.add_argument("--loco-sign-x", type=float, default=1.0)
     parser.add_argument("--loco-sign-y", type=float, default=1.0)
-    parser.add_argument("--loco-max-speed", type=float, default=0.45)
-    parser.add_argument("--loco-max-yaw-rate", type=float, default=0.35)
-    parser.add_argument("--loco-velocity-deadzone", type=float, default=0.07)
-    parser.add_argument("--loco-yaw-deadzone", type=float, default=0.15)
-    parser.add_argument("--loco-smooth", type=float, default=0.12)
-    parser.add_argument("--loco-facing-smooth", type=float, default=0.22)
+    parser.add_argument("--loco-max-speed", type=float, default=0.50)
+    parser.add_argument("--loco-max-yaw-rate", type=float, default=0.30)
+    parser.add_argument("--loco-velocity-deadzone", type=float, default=0.06)
+    parser.add_argument("--loco-yaw-deadzone", type=float, default=0.12)
+    parser.add_argument("--loco-smooth", type=float, default=0.18)
+    parser.add_argument("--loco-facing-smooth", type=float, default=0.28)
     parser.add_argument("--loco-output-deadzone", type=float, default=0.04)
     parser.add_argument("--loco-idle-decay", type=float, default=0.85)
     parser.add_argument(
@@ -441,7 +465,7 @@ def parse_args():
         help="Ignore IMU yaw error inside this deadband (rad, default ~3 deg).",
     )
     parser.add_argument("--loco-imu-yaw-max-correction", type=float, default=0.45)
-    parser.set_defaults(loco_imu_yaw_enabled=True)
+    parser.set_defaults(loco_imu_yaw_enabled=True, hybrid_locomotion=True)
     parser.add_argument("--loco-mode", type=int, default=1, help="SONIC planner mode when walking.")
     parser.add_argument(
         "--head-height-squat",

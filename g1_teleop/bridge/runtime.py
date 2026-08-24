@@ -10,7 +10,7 @@ import numpy as np
 from g1_teleop.bridge.cli import parse_args
 from g1_teleop.bridge.constants import T_TO_UNITREE_HUMANOID_LEFT_ARM, T_TO_UNITREE_HUMANOID_RIGHT_ARM
 from g1_teleop.bridge.dds_hand import DdsInspireHandPublisher
-from g1_teleop.bridge.keyboard import BridgeState, RawKeyboard, handle_key
+from g1_teleop.bridge.keyboard import BridgeState, KeyboardHoldTracker, RawKeyboard, handle_key
 from g1_teleop.bridge.locomotion_io import (
     loco_robot_base_quat,
     loco_robot_base_yaw,
@@ -57,6 +57,12 @@ from g1_teleop.locomotion.head import (
     reset_head_locomotion_state,
     update_facing_from_head,
 )
+from g1_teleop.locomotion.hybrid import (
+    KeyboardLocomotionController,
+    keyboard_planner_command,
+    merge_hybrid_planner_commands,
+)
+from g1_teleop.eval.task_a import RemsEvalLogger
 from g1_teleop.paths import ensure_scripts_on_path, visionpro_teleop_root
 
 ensure_scripts_on_path()
@@ -71,6 +77,8 @@ def main():
     args = parse_args()
     if args.head_vertical_follow is None:
         args.head_vertical_follow = bool(args.head_height_squat)
+    if not args.head_locomotion:
+        args.hybrid_locomotion = False
     period = 1.0 / max(args.publish_rate, 1e-6)
     streamer = VisionProStreamer(ip=args.avp_endpoint, record=False, benchmark_quiet=True)
     fpv_streamer = None
@@ -91,6 +99,11 @@ def main():
             print(f"WARNING: MuJoCo FPV disabled: {exc}")
     publisher = PackedPublisher(args.host, args.port)
     state = BridgeState()
+    kb_state = BridgeState()
+    kb_controller = KeyboardLocomotionController()
+    kb_hold_tracker = KeyboardHoldTracker()
+    eval_logger = RemsEvalLogger(args.eval_log) if args.eval_log else None
+    pending_waypoint_mark: int | None = None
     smoother = PositionSmoother()
     orientation_smoother = OrientationSmoother()
 
@@ -289,6 +302,17 @@ def main():
             f"max_speed={args.loco_max_speed} smooth={args.loco_smooth} "
             f"imu_yaw={'ON' if args.loco_imu_yaw_enabled else 'OFF'}"
         )
+        if args.hybrid_locomotion:
+            print(
+                "Hybrid locomotion ON: hold W/S/,/. to move; release to coast-stop. "
+                "Hold A/D or j/l to turn while stopped (slow walk-turn). "
+                f"speed={args.keyboard_loco_speed}  space=stop (keeps facing)"
+            )
+    if args.eval_log:
+        print(
+            f"Eval log ON: {args.eval_log}  "
+            "Mark Task A waypoints during teleop with keys 4-8 (WP1-WP5)."
+        )
     if args.head_height_squat:
         print(
             "Head-height squat ON: duck to lower pelvis (mode 4/6). "
@@ -378,6 +402,18 @@ def main():
     policy_started = False
     live_teleop = False
 
+    def sync_kb_body_facing_from_robot() -> None:
+        feedback = feedback_client.latest() if feedback_client is not None else None
+        robot_yaw = loco_robot_base_yaw(feedback)
+        if robot_yaw is None:
+            return
+        if head_loco_state.robot_base_yaw_at_calib is not None:
+            kb_controller.sync_body_facing(
+                float(robot_yaw - head_loco_state.robot_base_yaw_at_calib)
+            )
+        else:
+            kb_controller.sync_body_facing(float(robot_yaw))
+
     def apply_loco_sync(head_pose: np.ndarray) -> None:
         nonlocal head_loco_calib_pos, head_loco_calib_rot
         feedback = feedback_client.latest() if feedback_client is not None else None
@@ -400,6 +436,7 @@ def main():
                 "Head locomotion stays open-loop until F/T/H with deploy feedback.",
                 flush=True,
             )
+        sync_kb_body_facing_from_robot()
 
     def begin_calib_hold(kind: str) -> None:
         nonlocal calib_hold_until, official_base_positions, official_base_orientations
@@ -565,7 +602,11 @@ def main():
                     if calib_session.hold_deadline > 0.0 and now >= calib_session.hold_deadline:
                         commit_calib_hold()
 
-                for key in keyboard.read_keys():
+                keys = keyboard.read_keys()
+                if keys and args.head_locomotion and args.hybrid_locomotion:
+                    kb_hold_tracker.refresh(keys, now)
+
+                for key in keys:
                     if args.staged_calib and args.mapping_mode == "official-calib":
                         if key in ("f", "F", "c", "C"):
                             if calib_session.phase in (
@@ -614,7 +655,7 @@ def main():
                                 "Wait for balance, match your arms, press S for CALIB_SYNC."
                             )
                             continue
-                        if key in ("s", "S"):
+                        if key in ("s", "S") and not live_teleop:
                             if not policy_started:
                                 print("\nPress ] first to engage policy and wait for balance.")
                                 continue
@@ -698,7 +739,9 @@ def main():
                             apply_loco_sync(head_pose)
                         msg = "Teleop enabled: AVP hands drive upper body."
                         if args.head_locomotion:
-                            msg += " Forward/back = lean head; strafe = shift head left/right; turn head to change direction."
+                            msg += " Lean head to walk/turn."
+                            if args.hybrid_locomotion:
+                                msg += " Hold W/S to move; space stops (keeps facing)."
                         else:
                             msg += " Use WASD in this terminal to walk."
                         print(f"\n{msg}")
@@ -736,7 +779,31 @@ def main():
                                 official_calibration = captured
                                 print("\nOfficial-style AVP calibration captured.")
                         continue
-                    if not handle_key(state, key, head_locomotion=args.head_locomotion):
+                    if eval_logger is not None and key in ("4", "5", "6", "7", "8") and live_teleop:
+                        wp = int(key) - 3
+                        eval_logger.mark_waypoint(wp)
+                        pending_waypoint_mark = wp
+                        print(f"\nEval: marked Task A waypoint WP{wp}")
+                        continue
+                    if (
+                        args.head_locomotion
+                        and args.hybrid_locomotion
+                        and live_teleop
+                        and key in (" ", "r", "R")
+                    ):
+                        kb_controller.request_stop()
+                        kb_hold_tracker.clear()
+                        continue
+                    loco_key_target = kb_state if args.head_locomotion and args.hybrid_locomotion else state
+                    if not handle_key(
+                        loco_key_target,
+                        key,
+                        head_locomotion=args.head_locomotion,
+                        hybrid_locomotion=args.hybrid_locomotion,
+                        keyboard_walk_speed=args.keyboard_loco_speed,
+                    ):
+                        if eval_logger is not None:
+                            eval_logger.close()
                         publisher.send_command(start=False, stop=True, planner=True)
                         print("\nSent SONIC stop command.")
                         return
@@ -757,6 +824,8 @@ def main():
                     head_pose = head_pose_from_tracking(tracking)
 
                 planner_cmd = None
+                head_planner_cmd = None
+                kb_planner_cmd = None
                 if (
                     args.head_locomotion
                     and head_motion_allowed
@@ -767,7 +836,7 @@ def main():
                     last_head_loco_time = now
                     loco_feedback = feedback_client.latest() if feedback_client is not None else None
                     robot_base_quat = loco_robot_base_quat(loco_feedback)
-                    planner_cmd = compute_sonic_planner_command(
+                    head_planner_cmd = compute_sonic_planner_command(
                         head_pose,
                         head_loco_state,
                         head_loco_cfg,
@@ -775,6 +844,35 @@ def main():
                         calib_pos=head_loco_calib_pos,
                         locomotion_mode=args.loco_mode,
                         robot_base_quat=robot_base_quat,
+                    )
+                    planner_cmd = head_planner_cmd
+
+                if (
+                    args.head_locomotion
+                    and args.hybrid_locomotion
+                    and live_teleop
+                    and not stand_hold
+                    and head_motion_allowed
+                ):
+                    if kb_controller.pending_imu_sync:
+                        sync_kb_body_facing_from_robot()
+                        kb_controller.pending_imu_sync = False
+                    kb_planner_cmd = keyboard_planner_command(
+                        kb_controller,
+                        kb_hold_tracker.held(now),
+                        head_loco_cfg,
+                        period,
+                        locomotion_mode=args.loco_mode,
+                        default_speed=args.keyboard_loco_speed,
+                        smooth_alpha=max(args.loco_smooth, 0.18),
+                    )
+                    planner_cmd = merge_hybrid_planner_commands(
+                        head_planner_cmd,
+                        kb_planner_cmd,
+                        head_loco_cfg,
+                        locomotion_mode=args.loco_mode,
+                        kb_has_control=kb_controller.has_control,
+                        kb_facing=kb_controller.output_facing(),
                     )
 
                 if (
@@ -819,8 +917,44 @@ def main():
                         np.arctan2(planner_cmd.facing[1], planner_cmd.facing[0])
                     )
 
+                if eval_logger is not None and live_teleop and not stand_hold:
+                    loco_feedback = feedback_client.latest() if feedback_client is not None else None
+                    head_active = bool(
+                        head_planner_cmd is not None
+                        and head_planner_cmd.mode > 0
+                        and head_planner_cmd.speed > 0.0
+                    )
+                    kb_active = bool(
+                        kb_planner_cmd is not None
+                        and kb_planner_cmd.mode > 0
+                        and kb_planner_cmd.speed > 0.0
+                    )
+                    kb_dbg = {}
+                    if kb_planner_cmd is not None and kb_active:
+                        kb_dbg = {
+                            "vx": round(float(kb_planner_cmd.movement[0] * kb_planner_cmd.speed), 4),
+                            "vy": round(float(kb_planner_cmd.movement[1] * kb_planner_cmd.speed), 4),
+                        }
+                    eval_logger.write_row(
+                        mode=state.mode,
+                        movement=state.movement,
+                        facing=state.facing,
+                        speed=state.speed,
+                        head_active=head_active,
+                        kb_active=kb_active,
+                        imu_debug=head_loco_state.debug.get("imu"),
+                        head_cmd_debug=head_loco_state.debug,
+                        kb_cmd_debug=kb_dbg,
+                        feedback=loco_feedback,
+                        waypoint_mark=pending_waypoint_mark,
+                    )
+                    pending_waypoint_mark = None
+
                 if stand_hold:
                     state.set_idle()
+                    kb_state.set_idle()
+                    kb_controller.reset_motion()
+                    kb_hold_tracker.clear()
 
                 if not args.no_auto_start and now - last_start > 2.0:
                     publisher.send_command(start=True, stop=False, planner=True)

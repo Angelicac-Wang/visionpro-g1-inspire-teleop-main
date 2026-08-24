@@ -44,6 +44,14 @@ def main() -> None:
         argv.extend(["--vr-ramp-max-angular-speed", "0.9"])
     if "--wrist-rotation-scale" not in argv:
         argv.extend(["--wrist-rotation-scale", "0.55"])
+    if "--keyboard-loco-speed" not in argv:
+        argv.extend(["--keyboard-loco-speed", "0.42"])
+    if "--loco-max-speed" not in argv:
+        argv.extend(["--loco-max-speed", "0.50"])
+    if "--loco-smooth" not in argv:
+        argv.extend(["--loco-smooth", "0.18"])
+    if "--loco-facing-smooth" not in argv:
+        argv.extend(["--loco-facing-smooth", "0.28"])
 
     sys.argv = argv
     print(f"[g1_avp_sonic_teleop] Running {BRIDGE}")
