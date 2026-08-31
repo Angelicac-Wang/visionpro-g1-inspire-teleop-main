@@ -72,11 +72,9 @@ Click the **Terminal 3** window so key presses reach the bridge.
 | **S** | Walk backward (moonwalk — body facing stays forward) |
 | **,** | Strafe left |
 | **.** | Strafe right |
-| **A** / **D** or **j** / **l** | Spot turn (only while fully stopped) |
+| **A** / **D** | Spot turn (only while fully stopped) |
 | **space** / **r** | Stop — decelerate, keep facing |
 | **H** | Re-zero head facing / squat height (head loco) |
-
-During teleop, **S** is backward walk. **CALIB_SYNC** uses **S** only *before* teleop (after **]** , before **T**).
 
 While a keyboard move is active, keyboard commands **override** head walk speed. After you release keys and the robot stops, head locomotion resumes.
 

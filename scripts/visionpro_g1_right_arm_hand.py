@@ -47,6 +47,7 @@ from g1_teleop.hand.mapping import (
     HandCalibration,
     InspireHandMapper,
     format_debug as format_hand_debug,
+    run_hand_calibration,
     sample_raw_metrics,
 )
 
@@ -331,32 +332,6 @@ def publish_hand_command(publisher, values):
     return publisher.Write(cmd)
 
 
-def run_hand_calibration(streamer, mapper, sample_seconds, output_path):
-    if not output_path:
-        raise ValueError("--hand-calibration-file is required when using --calibrate-hand")
-
-    print("\nHand calibration will sample your AVP right hand.")
-    print("Pose 1: fully open the hand, keep fingers naturally straight, then press Enter.")
-    input()
-    open_samples = sample_raw_metrics(streamer, mapper, sample_seconds, side="right")
-    print(f"Captured {len(open_samples)} open-hand samples.")
-
-    print("Pose 2: make the most useful closed grasp/fist, including thumb opposition, then press Enter.")
-    input()
-    close_samples = sample_raw_metrics(streamer, mapper, sample_seconds, side="right")
-    print(f"Captured {len(close_samples)} closed-hand samples.")
-
-    if not open_samples or not close_samples:
-        raise RuntimeError("No AVP hand samples were captured; check Vision Pro tracking before calibrating.")
-
-    calibration = HandCalibration()
-    calibration.set_from_samples(open_samples, close_samples)
-    calibration.save(output_path)
-    mapper.calibration = calibration
-    mapper.reset()
-    print(f"Saved hand calibration to {output_path}")
-
-
 def main():
     parser = argparse.ArgumentParser(description="Control the G1 right arm and one Inspire hand from Vision Pro right-hand tracking.")
     parser.add_argument("--avp-endpoint", required=True, help="Vision Pro IP or external-network room code.")
@@ -451,6 +426,12 @@ def main():
         "--calibrate-hand",
         action="store_true",
         help="Capture open and closed AVP hand poses, save --hand-calibration-file, then continue teleop.",
+    )
+    parser.add_argument(
+        "--calibrate-hand-side",
+        choices=("left", "right"),
+        default="right",
+        help="Which AVP hand to sample when --calibrate-hand is set.",
     )
     parser.add_argument(
         "--hand-calibration-seconds",
@@ -576,7 +557,13 @@ def main():
     hand_publisher.Init()
 
     if args.calibrate_hand:
-        run_hand_calibration(streamer, mapper, args.hand_calibration_seconds, args.hand_calibration_file)
+        run_hand_calibration(
+            streamer,
+            mapper,
+            args.hand_calibration_seconds,
+            args.hand_calibration_file,
+            side=args.calibrate_hand_side,
+        )
 
     max_translation = np.array([args.max_dx, args.max_dy, args.max_dz], dtype=np.float64)
     head_to_waist_offset = np.array(

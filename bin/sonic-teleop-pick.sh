@@ -8,6 +8,7 @@ g1_teleop_load_env
 g1_teleop_prepare_pythonpath
 
 PYTHON="$(g1_teleop_python)"
+g1_teleop_require_python "${PYTHON}"
 AVP_ENDPOINT="${1:-}"
 
 if [[ -z "${AVP_ENDPOINT}" ]]; then

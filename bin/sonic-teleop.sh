@@ -8,6 +8,7 @@ g1_teleop_load_env
 g1_teleop_prepare_pythonpath
 
 PYTHON="$(g1_teleop_python)"
+g1_teleop_require_python "${PYTHON}"
 AVP_ENDPOINT="${1:-}"
 
 if [[ -z "${AVP_ENDPOINT}" ]]; then
@@ -15,12 +16,6 @@ if [[ -z "${AVP_ENDPOINT}" ]]; then
   exit 1
 fi
 shift
-
-if ! command -v "${PYTHON}" >/dev/null 2>&1; then
-  echo "Python not found: ${PYTHON}"
-  echo "Set SONIC_PYTHON in .env or activate your conda env."
-  exit 1
-fi
 
 cat <<EOF
 SONIC Terminal 3 — AVP bridge

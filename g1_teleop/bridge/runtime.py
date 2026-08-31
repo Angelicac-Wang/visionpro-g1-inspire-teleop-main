@@ -7,9 +7,9 @@ import time
 
 import numpy as np
 
-from g1_teleop.bridge.cli import parse_args
+from g1_teleop.bridge.cli import parse_args, resolve_hand_calibration_files
 from g1_teleop.bridge.constants import T_TO_UNITREE_HUMANOID_LEFT_ARM, T_TO_UNITREE_HUMANOID_RIGHT_ARM
-from g1_teleop.bridge.dds_hand import DdsInspireHandPublisher
+from g1_teleop.bridge.dds_hand import DdsInspireHandsPublisher
 from g1_teleop.bridge.keyboard import BridgeState, KeyboardHoldTracker, RawKeyboard, handle_key
 from g1_teleop.bridge.locomotion_io import (
     loco_robot_base_quat,
@@ -258,10 +258,20 @@ def main():
         )
         return vr_position, vr_orientation
     enable_inspire_hand = args.enable_inspire_hand_sim or args.enable_inspire_hand_dds
-    left_hand_mapper = InspireHandMapper.from_args(args) if enable_inspire_hand else None
-    right_hand_mapper = InspireHandMapper.from_args(args) if enable_inspire_hand else None
+    left_hand_calib_file, right_hand_calib_file = resolve_hand_calibration_files(args)
+    left_hand_mapper = (
+        InspireHandMapper.from_args(args, calibration_file=left_hand_calib_file)
+        if enable_inspire_hand
+        else None
+    )
+    right_hand_mapper = (
+        InspireHandMapper.from_args(args, calibration_file=right_hand_calib_file)
+        if enable_inspire_hand
+        else None
+    )
+    hand_dds_sides = args.hand_dds_sides
     dds_hand_publisher = (
-        DdsInspireHandPublisher(args.hand_topic_side, args.hand_dds_network)
+        DdsInspireHandsPublisher(hand_dds_sides, args.hand_dds_network)
         if args.enable_inspire_hand_dds
         else None
     )
@@ -337,8 +347,16 @@ def main():
     )
     if args.enable_inspire_hand_sim:
         print(f"Publishing sim Inspire hand commands on topic '{args.inspire_hand_topic}'.")
+        print(f"  Left hand calib:  {left_hand_calib_file}")
+        print(f"  Right hand calib: {right_hand_calib_file}")
     if dds_hand_publisher is not None:
-        print(f"Publishing physical Inspire right-hand commands to rt/inspire_hand/ctrl/{args.hand_topic_side}.")
+        topics = ", ".join(f"rt/inspire_hand/ctrl/{side}" for side in dds_hand_publisher.sides)
+        if hand_dds_sides == "both":
+            print(f"Publishing physical Inspire hands: AVP left->l, AVP right->r ({topics}).")
+        elif hand_dds_sides == "l":
+            print(f"Publishing physical Inspire left hand commands to rt/inspire_hand/ctrl/l.")
+        else:
+            print(f"Publishing physical Inspire right hand commands to rt/inspire_hand/ctrl/r.")
     if args.mapping_mode == "official-calib" and args.staged_calib:
         print_staged_calib_help()
     elif args.mapping_mode == "official-calib":
@@ -451,33 +469,51 @@ def main():
                 f"R={np.round(official_base_positions[3:6], 3).tolist()})"
             )
         elif kind == "sync":
-            feedback = feedback_client.latest() if feedback_client is not None else None
-            base_pos, base_orn, source = robot_base_from_feedback(
-                feedback,
-                fk_ref,
-                fallback_positions=official_base_positions,
-                fallback_orientations=official_base_orientations,
-                prefer_fk=args.use_fk_calib,
-                last_sent_positions=last_sent_vr_position,
-                last_sent_orientations=last_sent_vr_orientation,
-            )
-            if source == "fallback_init":
-                print(
-                    "\nWARNING: CALIB_SYNC has no FK/feedback — keeping mapping base. "
-                    f"Ensure deploy publishes g1_debug on :{args.zmq_feedback_port}."
-                )
+            if (
+                args.stand_hold_mode == "init-pose"
+                and last_sent_vr_position is not None
+                and last_sent_vr_orientation is not None
+            ):
+                # Robot was commanded to configured L init during stand-hold; FK body_q
+                # often lags (especially left wrist X). Use the streamed command as sync
+                # base so T does not pull arms back toward a shorter FK pose.
+                official_base_positions = last_sent_vr_position.copy()
+                official_base_orientations = last_sent_vr_orientation.copy()
+                source = "last_sent_command"
             else:
-                official_base_positions = base_pos
-                official_base_orientations = base_orn
+                feedback = feedback_client.latest() if feedback_client is not None else None
+                base_pos, base_orn, source = robot_base_from_feedback(
+                    feedback,
+                    fk_ref,
+                    fallback_positions=official_base_positions,
+                    fallback_orientations=official_base_orientations,
+                    prefer_fk=args.use_fk_calib,
+                    last_sent_positions=last_sent_vr_position,
+                    last_sent_orientations=last_sent_vr_orientation,
+                )
+                if source == "fallback_init":
+                    print(
+                        "\nWARNING: CALIB_SYNC has no FK/feedback — keeping mapping base. "
+                        f"Ensure deploy publishes g1_debug on :{args.zmq_feedback_port}."
+                    )
+                else:
+                    official_base_positions = base_pos
+                    official_base_orientations = base_orn
             if source == "vr_3point_feedback":
                 print(
                     "  NOTE: sync base from commanded vr_3point (FK unavailable). "
                     "Prefer body_q FK on real robot."
                 )
             print(
-                f"\nCALIB_SYNC: align arms to robot, hold {args.calib_hold_sec:.1f}s "
-                f"(robot base from {source})"
+                f"\nCALIB_SYNC: align YOUR arms to the robot's current pose, hold {args.calib_hold_sec:.1f}s "
+                f"(mapping base from {source}, "
+                f"L={np.round(official_base_positions[0:3], 3).tolist()} "
+                f"R={np.round(official_base_positions[3:6], 3).tolist()})"
             )
+            if args.stand_hold_mode == "init-pose":
+                print(
+                    "  init-pose mode: match the robot L-shape on screen, then hold still."
+                )
         elif kind == "head":
             print(f"\nHEAD zero: look forward, hold {args.calib_hold_sec:.1f}s")
 
@@ -678,6 +714,23 @@ def main():
                             if official_calibration is None:
                                 print("\nCalibration missing — run F then S.")
                                 continue
+                            if (
+                                args.staged_calib
+                                and args.mapping_mode == "official-calib"
+                                and tracking is not None
+                            ):
+                                snap = capture_official_calibration(tracking, args)
+                                if snap is not None:
+                                    official_calibration = merge_calibration(
+                                        official_calibration,
+                                        snap,
+                                        preserve_head=True,
+                                        preserve_wrists=False,
+                                    )
+                                    print(
+                                        "  T wrist zero: snapped to your current AVP pose "
+                                        "(hold the same shape as S to avoid a jump)."
+                                    )
                             stand_hold = False
                             live_teleop = True
                             calib_session.paused = False
@@ -1035,7 +1088,11 @@ def main():
                                 topic=args.inspire_hand_topic,
                             )
                         if dds_hand_publisher is not None:
-                            dds_hand_publisher.send(right_hand_command)
+                            dds_hand_publisher.send_physical_hands(
+                                left_command=left_hand_command,
+                                right_command=right_hand_command,
+                                mode=hand_dds_sides,
+                            )
                     elif (
                         last_hand_tracking_time
                         and now - last_hand_tracking_time >= args.hand_tracking_timeout
@@ -1052,7 +1109,11 @@ def main():
                                 topic=args.inspire_hand_topic,
                             )
                         if dds_hand_publisher is not None:
-                            dds_hand_publisher.send(right_hand_command)
+                            dds_hand_publisher.send_physical_hands(
+                                left_command=left_hand_command,
+                                right_command=right_hand_command,
+                                mode=hand_dds_sides,
+                            )
                         if args.print_debug and now - last_debug > 1.0:
                             hand_debug_lines.append("hand tracking lost -> sim safe open")
 
@@ -1220,7 +1281,7 @@ def main():
             feedback_client.close()
         if dds_hand_publisher is not None:
             try:
-                dds_hand_publisher.send(hand_open_command)
+                dds_hand_publisher.safe_open(hand_open_command)
             except Exception as exc:
                 print(f"Failed to safe-open Inspire hand cleanly: {exc}")
         publisher.close()

@@ -21,9 +21,25 @@ if __name__ == "__main__":
     parser.add_argument("--ip", default="192.168.123.211", help="Inspire hand Modbus IP address.")
     parser.add_argument("--lr", choices=("l", "r"), default="l", help="DDS side to subscribe to.")
     parser.add_argument("--device-id", type=int, default=1, help="Inspire hand Modbus device ID.")
+    parser.add_argument(
+        "--dds-network",
+        default=os.environ.get("INSPIRE_HAND_DDS_NETWORK") or os.environ.get("SONIC_NET_IF"),
+        help="Optional DDS NIC, e.g. enp3s0. Matches teleop --hand-dds-network.",
+    )
     args = parser.parse_args()
 
-    handler = inspire_sdk.ModbusDataHandler(ip=args.ip, LR=args.lr, device_id=args.device_id)
+    side_label = "left" if args.lr == "l" else "right"
+    print(
+        f"Starting {side_label} hand driver: ip={args.ip} "
+        f"topic=rt/inspire_hand/ctrl/{args.lr} device_id={args.device_id} "
+        f"dds_network={args.dds_network or 'default'}"
+    )
+    handler = inspire_sdk.ModbusDataHandler(
+        ip=args.ip,
+        LR=args.lr,
+        device_id=args.device_id,
+        network=args.dds_network,
+    )
     time.sleep(0.5)
 
     call_count = 0  # 记录调用次数
@@ -40,7 +56,10 @@ if __name__ == "__main__":
             if call_count % 10 == 0:  # 每 200 次调用计算一次频率
                 elapsed_time = time.perf_counter() - start_time  # 计算总耗时
                 frequency = call_count / elapsed_time  # 计算频率 (Hz)
-                print(f"当前频率: {frequency:.2f} Hz, 调用次数: {call_count}, 耗时: {elapsed_time:.6f} 秒")
+                print(
+                    f"[{side_label}] 当前频率: {frequency:.2f} Hz, "
+                    f"调用次数: {call_count}, 耗时: {elapsed_time:.6f} 秒"
+                )
     except KeyboardInterrupt:
         elapsed_time = time.perf_counter() - start_time  # 计算总耗时
         frequency = call_count / elapsed_time if elapsed_time > 0 else 0  # 计算最终频率

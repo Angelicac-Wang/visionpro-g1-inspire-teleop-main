@@ -186,10 +186,13 @@ class InspireHandMapper:
         self.smoothed = {channel: None for channel in COMMAND_ORDER}
 
     @classmethod
-    def from_args(cls, args):
+    def from_args(cls, args, calibration_file=None):
         calibration = HandCalibration()
-        if args.hand_calibration_file and os.path.exists(args.hand_calibration_file):
-            calibration = HandCalibration.load(args.hand_calibration_file)
+        path = calibration_file
+        if path is None:
+            path = getattr(args, "hand_calibration_file", None)
+        if path and os.path.exists(path):
+            calibration = HandCalibration.load(path)
         elif args.thumb_rotation_metric == "distance":
             calibration.channels["thumb_rot"] = {
                 "open": float(args.thumb_open_distance),
@@ -331,6 +334,33 @@ def sample_raw_metrics(streamer, mapper, seconds, side="right"):
             samples.append(raw)
         time.sleep(1.0 / 60.0)
     return samples
+
+
+def run_hand_calibration(streamer, mapper, sample_seconds, output_path, side="right"):
+    if not output_path:
+        raise ValueError("output_path is required for hand calibration")
+
+    print(f"\nHand calibration will sample your AVP {side} hand.")
+    print("Pose 1: fully open the hand, keep fingers naturally straight, then press Enter.")
+    input()
+    open_samples = sample_raw_metrics(streamer, mapper, sample_seconds, side=side)
+    print(f"Captured {len(open_samples)} open-hand samples.")
+
+    print("Pose 2: make the most useful closed grasp/fist, including thumb opposition, then press Enter.")
+    input()
+    close_samples = sample_raw_metrics(streamer, mapper, sample_seconds, side=side)
+    print(f"Captured {len(close_samples)} closed-hand samples.")
+
+    if not open_samples or not close_samples:
+        raise RuntimeError("No AVP hand samples were captured; check Vision Pro tracking before calibrating.")
+
+    calibration = HandCalibration()
+    calibration.set_from_samples(open_samples, close_samples)
+    calibration.save(output_path)
+    mapper.calibration = calibration
+    mapper.reset()
+    print(f"Saved {side} hand calibration to {output_path}")
+    return calibration
 
 
 def format_debug(command, debug):

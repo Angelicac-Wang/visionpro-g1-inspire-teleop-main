@@ -159,12 +159,11 @@ def print_staged_calib_help() -> None:
         "  F  CALIB_FULL — YOU hold forearms-forward L-shape ~2s.\n"
         "                 Records your AVP pose + head/squat/walk zeros.\n"
         "                 Robot mapping reference = configured L init (not sent yet if policy off).\n"
-        "  ]  ENGAGE      — Start balance policy; robot stands. Hold current arm pose (FK),\n"
-        "                 NOT snap to L-shape. Head height zero already from F.\n"
-        "  S  CALIB_SYNC  — Match YOUR arms to robot's CURRENT pose (often arms at sides),\n"
-        "                 hold ~2s. Updates wrist sync + robot-side mapping base from FK.\n"
-        "                 NOT another L-shape calibration.\n"
-        "  T  TELEOP      — Live AVP hands + head walk/squat.\n"
+        "  ]  ENGAGE      — Start balance policy; robot holds configured L init-pose.\n"
+        "  S  CALIB_SYNC  — Match YOUR arms to that robot L-shape on screen, hold ~2s.\n"
+        "                 Updates wrist zero + mapping base (init-pose uses commanded L,\n"
+        "                 not FK lag). Head/squat zero stays from F.\n"
+        "  T  TELEOP      — Live AVP hands + head walk/squat (wrist zero re-snapped at T).\n"
         "  H  HEAD zero   — Recalibrate facing/squat height only\n"
         "  P  PAUSE       — Freeze upper-body mapping\n"
         "  c  alias for F"
@@ -213,10 +212,23 @@ def apply_hand_workspace_shape(pos: np.ndarray, args) -> np.ndarray:
     return shaped
 
 
-def official_hand_delta(rel: np.ndarray, calib_rel: np.ndarray, args) -> np.ndarray:
+def official_hand_delta(rel: np.ndarray, calib_rel: np.ndarray, args, side: str | None = None) -> np.ndarray:
     signed_delta = official_delta_axis_sign(args) * (rel - calib_rel)
     signed_delta[0] *= args.hand_forward_scale if signed_delta[0] >= 0.0 else args.hand_backward_scale
-    return args.body_scale * signed_delta
+    delta = args.body_scale * signed_delta
+    if side == "left":
+        delta *= float(getattr(args, "left_hand_delta_scale", 1.0))
+        delta[2] *= float(getattr(args, "left_hand_delta_z_scale", 1.0))
+    elif side == "right":
+        delta *= float(getattr(args, "right_hand_delta_scale", 1.0))
+    return delta
+
+
+def wrist_orientation_mode_for(side: str, args) -> str:
+    override = getattr(args, f"{side}_wrist_orientation_mode", None)
+    if override:
+        return override
+    return args.wrist_orientation_mode
 
 
 def wrist_axis_remap_matrix(args) -> np.ndarray:
@@ -478,35 +490,44 @@ def build_official_calib_vr_targets(
     positions = []
     orientations = []
     debug = {"left_rel": None, "right_rel": None, "left_delta": None, "right_delta": None}
-    left_wrist_joints = np.zeros(3, dtype=np.float64) if args.wrist_orientation_mode == "wrist-joints" else None
-    right_wrist_joints = np.zeros(3, dtype=np.float64) if args.wrist_orientation_mode == "wrist-joints" else None
+    left_wrist_joints = (
+        np.zeros(3, dtype=np.float64)
+        if wrist_orientation_mode_for("left", args) == "wrist-joints"
+        else None
+    )
+    right_wrist_joints = (
+        np.zeros(3, dtype=np.float64)
+        if wrist_orientation_mode_for("right", args) == "wrist-joints"
+        else None
+    )
 
     for side, pose, calib_rel, calib_orientation, calib_rotation, base in (
         ("left", left_pose, calibration.left_rel, calibration.left_orientation, calibration.left_rotation, left_base),
         ("right", right_pose, calibration.right_rel, calibration.right_orientation, calibration.right_rotation, right_base),
     ):
         base_orn = left_base_orn if side == "left" else right_base_orn
+        wrist_mode = wrist_orientation_mode_for(side, args)
         if force_base:
             pos = base
             orn = base_orn
         elif pose is not None and calib_rel is not None:
             rel = head_yaw_compensated_relative(head_pose, pose)
-            delta = official_hand_delta(rel, calib_rel, args)
+            delta = official_hand_delta(rel, calib_rel, args, side=side)
             pos = apply_hand_workspace_shape(base + delta, args)
             debug[f"{side}_rel"] = rel.copy()
             debug[f"{side}_delta"] = delta.copy()
-            if args.wrist_orientation_mode == "live":
+            if wrist_mode == "live":
                 orn = rotmat_to_quat_wxyz(pose[:3, :3])
-            elif args.wrist_orientation_mode == "calibrated":
+            elif wrist_mode == "calibrated":
                 orn = calibrated_wrist_orientation(head_pose, pose, calib_rotation, base_orn, side, args)
-            elif args.wrist_orientation_mode == "wrist-joints":
+            elif wrist_mode == "wrist-joints":
                 orn = base_orn
                 wrist_joints = calibrated_wrist_joints(head_pose, pose, calib_rotation, side, args)
                 if side == "left":
                     left_wrist_joints = wrist_joints
                 else:
                     right_wrist_joints = wrist_joints
-            elif args.wrist_orientation_mode == "neutral":
+            elif wrist_mode == "neutral":
                 orn = base_orn
             else:
                 orn = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)

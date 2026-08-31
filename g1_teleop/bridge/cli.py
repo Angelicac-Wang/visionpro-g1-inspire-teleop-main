@@ -8,15 +8,27 @@ import os
 from g1_teleop.paths import SCRIPTS_DIR, inspire_hand_sdk_root
 
 
-def default_hand_calibration_file() -> str:
-    sdk_root = inspire_hand_sdk_root()
-    repo_path = os.path.join(SCRIPTS_DIR, "visionpro_right_hand_calibration.json")
-    sdk_example_path = os.path.join(sdk_root, "example", "visionpro_right_hand_calibration.json")
-    if os.path.exists(repo_path):
-        return repo_path
-    if os.path.exists(sdk_example_path):
-        return sdk_example_path
+def default_hand_calibration_file(side: str = "right") -> str:
+    filename = (
+        "visionpro_left_hand_calibration.json"
+        if side == "left"
+        else "visionpro_right_hand_calibration.json"
+    )
+    repo_path = os.path.join(SCRIPTS_DIR, filename)
+    if side == "right":
+        sdk_root = inspire_hand_sdk_root()
+        sdk_example_path = os.path.join(sdk_root, "example", filename)
+        if os.path.exists(repo_path):
+            return repo_path
+        if os.path.exists(sdk_example_path):
+            return sdk_example_path
     return repo_path
+
+
+def resolve_hand_calibration_files(args) -> tuple[str, str]:
+    if args.hand_calibration_file:
+        return args.hand_calibration_file, args.hand_calibration_file
+    return args.hand_calibration_file_left, args.hand_calibration_file_right
 
 
 def parse_args():
@@ -283,6 +295,27 @@ def parse_args():
         help="Extra scale for negative robot-X hand motion in official-calib mode.",
     )
     parser.add_argument(
+        "--left-hand-delta-scale",
+        type=float,
+        default=1.0,
+        help="Multiply official-calib AVP-minus-calibration wrist delta for the left arm.",
+    )
+    parser.add_argument(
+        "--left-hand-delta-z-scale",
+        type=float,
+        default=0.45,
+        help=(
+            "Extra scale on left-arm vertical (robot-Z) calib delta only. "
+            "AVP left wrist Z often overshoots on forward extension; default 0.45."
+        ),
+    )
+    parser.add_argument(
+        "--right-hand-delta-scale",
+        type=float,
+        default=1.0,
+        help="Multiply official-calib AVP-minus-calibration wrist delta for the right arm.",
+    )
+    parser.add_argument(
         "--min-hand-x",
         type=float,
         default=0.20,
@@ -313,6 +346,22 @@ def parse_args():
             "and sends direct wrist roll/pitch/yaw overrides."
         ),
     )
+    _wrist_orient_choices = ("neutral", "identity", "live", "calibrated", "wrist-joints")
+    parser.add_argument(
+        "--left-wrist-orientation-mode",
+        choices=_wrist_orient_choices,
+        default="neutral",
+        help=(
+            "Left-arm wrist quaternion mode. Default neutral avoids ~180° wrist flip "
+            "when both arms extend forward; right arm still uses --wrist-orientation-mode."
+        ),
+    )
+    parser.add_argument(
+        "--right-wrist-orientation-mode",
+        choices=_wrist_orient_choices,
+        default=None,
+        help="Optional override for right-arm wrist orientation (default: global mode).",
+    )
     parser.add_argument(
         "--wrist-rotation-scale",
         type=float,
@@ -325,7 +374,7 @@ def parse_args():
         default="avp-palm",
         help="Extra local-basis remap for calibrated wrist rotation.",
     )
-    parser.add_argument("--left-wrist-rot-sign-x", type=float, default=1.0)
+    parser.add_argument("--left-wrist-rot-sign-x", type=float, default=-1.0)
     parser.add_argument("--left-wrist-rot-sign-y", type=float, default=1.0)
     parser.add_argument("--left-wrist-rot-sign-z", type=float, default=-1.0)
     parser.add_argument("--right-wrist-rot-sign-x", type=float, default=-1.0)
@@ -363,14 +412,23 @@ def parse_args():
     parser.add_argument(
         "--enable-inspire-hand-dds",
         action="store_true",
-        help="Publish AVP right-hand finger tracking to the physical Inspire hand DDS topic.",
+        help="Publish AVP finger tracking to physical Inspire hand DDS topic(s).",
     )
     parser.add_argument("--inspire-hand-topic", default="inspire_hand")
+    parser.add_argument(
+        "--hand-dds-sides",
+        choices=("l", "r", "both"),
+        default="both",
+        help=(
+            "Physical Inspire hand DDS topics. both publishes AVP left->l and AVP right->r; "
+            "l or r publishes only that side."
+        ),
+    )
     parser.add_argument(
         "--hand-topic-side",
         choices=("l", "r"),
         default="l",
-        help="DDS side for the physical right hand. Use the same side as Headless_driver_r --lr.",
+        help="Deprecated alias for single-hand setups. Prefer --hand-dds-sides.",
     )
     parser.add_argument(
         "--hand-dds-network",
@@ -379,8 +437,19 @@ def parse_args():
     )
     parser.add_argument("--hand-tracking-timeout", type=float, default=1.0)
     parser.add_argument(
+        "--hand-calibration-file-left",
+        default=default_hand_calibration_file("left"),
+        help="JSON open/close calibration for AVP left hand -> Inspire left.",
+    )
+    parser.add_argument(
+        "--hand-calibration-file-right",
+        default=default_hand_calibration_file("right"),
+        help="JSON open/close calibration for AVP right hand -> Inspire right.",
+    )
+    parser.add_argument(
         "--hand-calibration-file",
-        default=default_hand_calibration_file(),
+        default=None,
+        help="Optional: use one calibration file for both hands (overrides left/right paths).",
     )
     parser.add_argument("--open-angle", type=int, default=1000)
     parser.add_argument("--close-angle", type=int, default=0)
