@@ -199,11 +199,53 @@ def default_official_base_orientations() -> np.ndarray:
     return np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64), 3)
 
 
-def official_delta_axis_sign(args) -> np.ndarray:
-    return np.array(
-        [args.official_delta_sign_x, args.official_delta_sign_y, args.official_delta_sign_z],
-        dtype=np.float64,
-    )
+def official_delta_axis_sign(args, side: str | None = None) -> np.ndarray:
+    signs = []
+    for axis in ("x", "y", "z"):
+        global_sign = float(getattr(args, f"official_delta_sign_{axis}"))
+        if side in ("left", "right"):
+            override = getattr(args, f"{side}_official_delta_sign_{axis}", None)
+            signs.append(global_sign if override is None else float(override))
+        else:
+            signs.append(global_sign)
+    return np.array(signs, dtype=np.float64)
+
+
+def hand_delta_remap_matrix(side: str | None, args) -> np.ndarray:
+    """Per-arm linear basis for AVP rel deltas before axis signs / reach scales."""
+    preset = "identity"
+    if side in ("left", "right"):
+        preset = getattr(args, f"{side}_hand_delta_remap", "identity")
+
+    presets = {
+        "identity": np.eye(3, dtype=np.float64),
+        # Left AVP wrist rel couples forward/back (x) with reach-up (z) and lateral (y).
+        # Decouple robot-X from vertical/lateral motion so upper-left does not pull the arm back.
+        "unitree-left-arm": np.array(
+            [
+                [1.0, 0.2, -0.55],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        ),
+    }
+    if preset not in presets:
+        raise ValueError(f"Unknown hand-delta remap preset: {preset!r}")
+    return presets[preset]
+
+
+def hand_forward_backward_scales(args, side: str | None = None) -> tuple[float, float]:
+    forward = float(args.hand_forward_scale)
+    backward = float(args.hand_backward_scale)
+    if side in ("left", "right"):
+        forward_override = getattr(args, f"{side}_hand_forward_scale", None)
+        backward_override = getattr(args, f"{side}_hand_backward_scale", None)
+        if forward_override is not None:
+            forward = float(forward_override)
+        if backward_override is not None:
+            backward = float(backward_override)
+    return forward, backward
 
 
 def apply_hand_workspace_shape(pos: np.ndarray, args) -> np.ndarray:
@@ -212,13 +254,30 @@ def apply_hand_workspace_shape(pos: np.ndarray, args) -> np.ndarray:
     return shaped
 
 
+def left_hand_z_delta_scale(raw_delta: np.ndarray, args) -> float:
+    """Damp spurious Z on forward extension; keep full Z when reaching up."""
+    damp = float(getattr(args, "left_hand_delta_z_scale", 1.0))
+    up = float(getattr(args, "left_hand_delta_z_up_scale", 1.0))
+    raw_dz = float(raw_delta[2])
+    raw_dx = float(raw_delta[0])
+    if raw_dz <= 0.0:
+        return 1.0
+    # AVP left wrist often picks up positive dz while reaching forward (negative dx).
+    if raw_dx < -0.02 and abs(raw_dx) >= raw_dz:
+        return damp
+    return up
+
+
 def official_hand_delta(rel: np.ndarray, calib_rel: np.ndarray, args, side: str | None = None) -> np.ndarray:
-    signed_delta = official_delta_axis_sign(args) * (rel - calib_rel)
-    signed_delta[0] *= args.hand_forward_scale if signed_delta[0] >= 0.0 else args.hand_backward_scale
+    raw_delta = np.asarray(rel - calib_rel, dtype=np.float64)
+    mapped_delta = hand_delta_remap_matrix(side, args) @ raw_delta
+    signed_delta = official_delta_axis_sign(args, side) * mapped_delta
+    forward_scale, backward_scale = hand_forward_backward_scales(args, side)
+    signed_delta[0] *= forward_scale if signed_delta[0] >= 0.0 else backward_scale
     delta = args.body_scale * signed_delta
     if side == "left":
         delta *= float(getattr(args, "left_hand_delta_scale", 1.0))
-        delta[2] *= float(getattr(args, "left_hand_delta_z_scale", 1.0))
+        delta[2] *= left_hand_z_delta_scale(raw_delta, args)
     elif side == "right":
         delta *= float(getattr(args, "right_hand_delta_scale", 1.0))
     return delta
@@ -231,8 +290,13 @@ def wrist_orientation_mode_for(side: str, args) -> str:
     return args.wrist_orientation_mode
 
 
-def wrist_axis_remap_matrix(args) -> np.ndarray:
+def wrist_axis_remap_matrix(args, side: str | None = None) -> np.ndarray:
     remap = args.wrist_axis_remap
+    if side == "left" and getattr(args, "left_wrist_axis_remap", None):
+        remap = args.left_wrist_axis_remap
+    elif side == "right" and getattr(args, "right_wrist_axis_remap", None):
+        remap = args.right_wrist_axis_remap
+
     presets = {
         "identity": np.eye(3, dtype=np.float64),
         # AVP palm up/down currently lands on a side-flip axis. This preset rotates
@@ -241,6 +305,15 @@ def wrist_axis_remap_matrix(args) -> np.ndarray:
             [
                 [0.0, 0.0, 1.0],
                 [0.0, 1.0, 0.0],
+                [-1.0, 0.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        # Left-arm mirror: flip the medial/lateral wrist axis only (Y in remapped basis).
+        "avp-palm-left": np.array(
+            [
+                [0.0, 0.0, 1.0],
+                [0.0, -1.0, 0.0],
                 [-1.0, 0.0, 0.0],
             ],
             dtype=np.float64,
@@ -281,8 +354,8 @@ def wrist_axis_remap_matrix(args) -> np.ndarray:
     return presets[remap]
 
 
-def remap_wrist_rotation_delta(rotation_delta: np.ndarray, args) -> np.ndarray:
-    basis = wrist_axis_remap_matrix(args)
+def remap_wrist_rotation_delta(rotation_delta: np.ndarray, args, side: str | None = None) -> np.ndarray:
+    basis = wrist_axis_remap_matrix(args, side)
     return basis @ rotation_delta @ basis.T
 
 
@@ -357,7 +430,7 @@ def calibrated_wrist_orientation(
 
     current_rotation = head_yaw_compensated_rotation(head_pose, wrist_pose)
     rotation_delta = calibration_rotation.T @ current_rotation
-    rotation_delta = remap_wrist_rotation_delta(rotation_delta, args)
+    rotation_delta = remap_wrist_rotation_delta(rotation_delta, args, side)
     rotation_delta = apply_side_wrist_rotation_signs(rotation_delta, side, args)
     rotation_delta = scale_rotation(rotation_delta, args.wrist_rotation_scale)
     target_rotation = quat_wxyz_to_rotmat(base_orientation) @ rotation_delta
@@ -399,7 +472,7 @@ def calibrated_wrist_joints(
 
     current_rotation = head_yaw_compensated_rotation(head_pose, wrist_pose)
     rotation_delta = calibration_rotation.T @ current_rotation
-    rotation_delta = remap_wrist_rotation_delta(rotation_delta, args)
+    rotation_delta = remap_wrist_rotation_delta(rotation_delta, args, side)
     rotation_delta = apply_side_wrist_rotation_signs(rotation_delta, side, args)
     rotation_delta = scale_rotation(rotation_delta, args.wrist_rotation_scale)
     joints = rotmat_to_xyz_euler(rotation_delta)

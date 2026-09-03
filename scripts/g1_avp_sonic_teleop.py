@@ -26,6 +26,11 @@ def main() -> None:
         argv.append("--head-height-squat")
     if "--enable-mujoco-fpv" not in argv and "--no-mujoco-fpv" not in argv:
         argv.append("--enable-mujoco-fpv")
+    if (
+        "--enable-inspire-hand-sim" not in argv
+        and "--no-mujoco-fpv" not in argv
+    ):
+        argv.append("--enable-inspire-hand-sim")
     if "--hybrid-smoothing-tau" not in argv:
         argv.extend(["--hybrid-smoothing-tau", "0.10"])
     if "--hybrid-max-speed" not in argv:
@@ -43,7 +48,11 @@ def main() -> None:
     if "--vr-ramp-max-angular-speed" not in argv:
         argv.extend(["--vr-ramp-max-angular-speed", "0.9"])
     if "--wrist-rotation-scale" not in argv:
-        argv.extend(["--wrist-rotation-scale", "0.55"])
+        argv.extend(["--wrist-rotation-scale", "0.90"])
+    if "--max-wrist-pitch" not in argv:
+        argv.extend(["--max-wrist-pitch", "1.65"])
+    if "--max-wrist-roll" not in argv:
+        argv.extend(["--max-wrist-roll", "1.65"])
     if "--keyboard-loco-speed" not in argv:
         argv.extend(["--keyboard-loco-speed", "0.42"])
     if "--loco-max-speed" not in argv:
@@ -59,6 +68,10 @@ def main() -> None:
     print(
         "[g1_avp_sonic_teleop] L-shape workflow: deploy uses --init-arm-pose forearms-forward; "
         "stand-hold=init-pose after ]. Use --stand-hold-mode track-robot for arms-down hold."
+    )
+    print(
+        "[g1_avp_sonic_teleop] Defaults: pure head loco, Inspire finger sim, "
+        "left delta remap identity, left wrist calibrated + avp-palm-left."
     )
     runpy.run_path(str(BRIDGE), run_name="__main__")
 

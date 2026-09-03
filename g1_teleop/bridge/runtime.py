@@ -7,6 +7,7 @@ import time
 
 import numpy as np
 
+from g1_teleop.bridge.arm_tracking_hold import ArmTrackingHoldState, apply_arm_tracking_hold
 from g1_teleop.bridge.cli import parse_args, resolve_hand_calibration_files
 from g1_teleop.bridge.constants import T_TO_UNITREE_HUMANOID_LEFT_ARM, T_TO_UNITREE_HUMANOID_RIGHT_ARM
 from g1_teleop.bridge.dds_hand import DdsInspireHandsPublisher
@@ -106,6 +107,7 @@ def main():
     pending_waypoint_mark: int | None = None
     smoother = PositionSmoother()
     orientation_smoother = OrientationSmoother()
+    arm_tracking_hold_state = ArmTrackingHoldState()
 
     def seed_arm_smoothers_from_vr(vr_position: np.ndarray, vr_orientation: np.ndarray, now: float) -> None:
         smoother.position = np.asarray(vr_position, dtype=np.float64).reshape(9).copy()
@@ -306,6 +308,8 @@ def main():
     print(f"AVP -> SONIC bridge bound to {publisher.endpoint}")
     print(f"Mapping mode: {args.mapping_mode}")
     print(f"Active hands: {args.active_hands}")
+    if args.arm_tracking_hold:
+        print("Arm tracking hold ON: lost wrists keep last command until tracking returns.")
     if args.head_locomotion:
         print(
             "Head locomotion ON: move head to walk/turn (work-master velocity model). "
@@ -564,6 +568,7 @@ def main():
             )
         apply_loco_sync(loco_head)
         calib_hold_until = 0.0
+        arm_tracking_hold_state.reset()
 
         if calib_session.hold_kind == "full":
             calib_session.full_done = True
@@ -1172,6 +1177,33 @@ def main():
                 preengage_stream = should_preenage_stream()
                 if targets is not None and (policy_started or preengage_stream):
                     vr_position, vr_orientation = targets
+                    if (
+                        args.arm_tracking_hold
+                        and live_teleop
+                        and not stand_hold
+                        and now >= calib_hold_until
+                        and not calib_session.paused
+                    ):
+                        left_tracked = left_pose is not None and hand_is_active(args, "left")
+                        right_tracked = right_pose is not None and hand_is_active(args, "right")
+                        vr_position, vr_orientation, left_wrist_joints, right_wrist_joints = (
+                            apply_arm_tracking_hold(
+                                vr_position,
+                                vr_orientation,
+                                left_wrist_joints,
+                                right_wrist_joints,
+                                left_tracked=left_tracked,
+                                right_tracked=right_tracked,
+                                left_active=hand_is_active(args, "left"),
+                                right_active=hand_is_active(args, "right"),
+                                state=arm_tracking_hold_state,
+                                enabled=True,
+                                last_sent_position=last_sent_vr_position,
+                                last_sent_orientation=last_sent_vr_orientation,
+                            )
+                        )
+                        if target_debug is not None:
+                            target_debug["arm_hold"] = dict(arm_tracking_hold_state.debug)
                     use_ramp = (
                         stand_hold
                         or calib_session.paused
@@ -1222,6 +1254,8 @@ def main():
                             np.round(vr_position, 3).tolist(),
                         )
                         if target_debug:
+                            if target_debug.get("arm_hold"):
+                                print("arm_hold=", target_debug.get("arm_hold"))
                             print(
                                 "rel_to_head left=",
                                 None

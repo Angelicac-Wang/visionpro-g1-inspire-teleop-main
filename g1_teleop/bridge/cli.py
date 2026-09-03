@@ -282,6 +282,25 @@ def parse_args():
         default=1.0,
         help="Axis sign for official-calib hand up/down delta.",
     )
+    for side in ("left", "right"):
+        parser.add_argument(
+            f"--{side}-official-delta-sign-x",
+            type=float,
+            default=None,
+            help=f"Optional override for {side}-arm official-calib delta sign on robot X.",
+        )
+        parser.add_argument(
+            f"--{side}-official-delta-sign-y",
+            type=float,
+            default=None,
+            help=f"Optional override for {side}-arm official-calib delta sign on robot Y.",
+        )
+        parser.add_argument(
+            f"--{side}-official-delta-sign-z",
+            type=float,
+            default=None,
+            help=f"Optional override for {side}-arm official-calib delta sign on robot Z.",
+        )
     parser.add_argument(
         "--hand-forward-scale",
         type=float,
@@ -294,6 +313,36 @@ def parse_args():
         default=0.35,
         help="Extra scale for negative robot-X hand motion in official-calib mode.",
     )
+    for side in ("left", "right"):
+        parser.add_argument(
+            f"--{side}-hand-forward-scale",
+            type=float,
+            default=None,
+            help=f"Optional override for {side}-arm positive robot-X reach scale.",
+        )
+        parser.add_argument(
+            f"--{side}-hand-backward-scale",
+            type=float,
+            default=None,
+            help=f"Optional override for {side}-arm negative robot-X reach scale.",
+        )
+    _hand_delta_remap_choices = ("identity", "unitree-left-arm")
+    parser.add_argument(
+        "--left-hand-delta-remap",
+        choices=_hand_delta_remap_choices,
+        default="identity",
+        help=(
+            "Linear 3x3 basis applied to left-arm AVP rel delta before axis signs. "
+            "'unitree-left-arm' decouples robot-X from vertical/lateral AVP coupling; "
+            "identity is the current sim default for freer left reach-up."
+        ),
+    )
+    parser.add_argument(
+        "--right-hand-delta-remap",
+        choices=_hand_delta_remap_choices,
+        default="identity",
+        help="Linear 3x3 basis applied to right-arm AVP rel delta before axis signs.",
+    )
     parser.add_argument(
         "--left-hand-delta-scale",
         type=float,
@@ -305,9 +354,16 @@ def parse_args():
         type=float,
         default=0.45,
         help=(
-            "Extra scale on left-arm vertical (robot-Z) calib delta only. "
-            "AVP left wrist Z often overshoots on forward extension; default 0.45."
+            "Scale left-arm positive-Z delta during forward extension only "
+            "(AVP couples spurious lift when rel_x decreases). Reach-up uses "
+            "--left-hand-delta-z-up-scale instead."
         ),
+    )
+    parser.add_argument(
+        "--left-hand-delta-z-up-scale",
+        type=float,
+        default=1.0,
+        help="Scale left-arm positive-Z delta when motion is reach-up (not forward-dominant).",
     )
     parser.add_argument(
         "--right-hand-delta-scale",
@@ -350,10 +406,10 @@ def parse_args():
     parser.add_argument(
         "--left-wrist-orientation-mode",
         choices=_wrist_orient_choices,
-        default="neutral",
+        default="calibrated",
         help=(
-            "Left-arm wrist quaternion mode. Default neutral avoids ~180° wrist flip "
-            "when both arms extend forward; right arm still uses --wrist-orientation-mode."
+            "Left-arm wrist quaternion mode. Default calibrated + avp-palm-left for sim teleop; "
+            "use neutral if the torso hunches when the left hand moves."
         ),
     )
     parser.add_argument(
@@ -365,14 +421,30 @@ def parse_args():
     parser.add_argument(
         "--wrist-rotation-scale",
         type=float,
-        default=0.65,
-        help="Scale applied to calibrated wrist rotation. Use 0.5 if wrist tracking feels too aggressive.",
+        default=0.90,
+        help="Scale applied to calibrated wrist rotation. Use 0.5-0.7 if wrist tracking feels too aggressive.",
     )
     parser.add_argument(
         "--wrist-axis-remap",
-        choices=("identity", "avp-palm", "x-to-y", "x-to-z", "y-to-x", "z-to-x"),
+        choices=("identity", "avp-palm", "avp-palm-left", "x-to-y", "x-to-z", "y-to-x", "z-to-x"),
         default="avp-palm",
         help="Extra local-basis remap for calibrated wrist rotation.",
+    )
+    _wrist_remap_choices = ("identity", "avp-palm", "avp-palm-left", "x-to-y", "x-to-z", "y-to-x", "z-to-x")
+    parser.add_argument(
+        "--left-wrist-axis-remap",
+        choices=_wrist_remap_choices,
+        default="avp-palm-left",
+        help=(
+            "Left-arm wrist rotation basis. Default avp-palm-left; set identity to use "
+            "--wrist-axis-remap only."
+        ),
+    )
+    parser.add_argument(
+        "--right-wrist-axis-remap",
+        choices=_wrist_remap_choices,
+        default=None,
+        help="Optional override for right-arm wrist rotation basis (default: --wrist-axis-remap).",
     )
     parser.add_argument("--left-wrist-rot-sign-x", type=float, default=-1.0)
     parser.add_argument("--left-wrist-rot-sign-y", type=float, default=1.0)
@@ -383,8 +455,8 @@ def parse_args():
     parser.add_argument("--wrist-joint-sign-roll", type=float, default=1.0)
     parser.add_argument("--wrist-joint-sign-pitch", type=float, default=1.0)
     parser.add_argument("--wrist-joint-sign-yaw", type=float, default=1.0)
-    parser.add_argument("--max-wrist-roll", type=float, default=1.5)
-    parser.add_argument("--max-wrist-pitch", type=float, default=1.2)
+    parser.add_argument("--max-wrist-roll", type=float, default=1.65)
+    parser.add_argument("--max-wrist-pitch", type=float, default=1.65)
     parser.add_argument("--max-wrist-yaw", type=float, default=1.2)
     parser.add_argument(
         "--legacy-head-relative",
@@ -436,6 +508,19 @@ def parse_args():
         help="Optional DDS NIC for physical Inspire hand commands, e.g. enp3s0.",
     )
     parser.add_argument("--hand-tracking-timeout", type=float, default=1.0)
+    parser.add_argument(
+        "--arm-tracking-hold",
+        action="store_true",
+        default=None,
+        help="When wrist tracking is lost, hold the last valid arm target until it returns.",
+    )
+    parser.add_argument(
+        "--no-arm-tracking-hold",
+        dest="arm_tracking_hold",
+        action="store_false",
+        help="Snap lost arms back to init/base target (legacy behavior).",
+    )
+    parser.set_defaults(arm_tracking_hold=True)
     parser.add_argument(
         "--hand-calibration-file-left",
         default=default_hand_calibration_file("left"),
@@ -534,7 +619,7 @@ def parse_args():
         help="Ignore IMU yaw error inside this deadband (rad, default ~3 deg).",
     )
     parser.add_argument("--loco-imu-yaw-max-correction", type=float, default=0.45)
-    parser.set_defaults(loco_imu_yaw_enabled=True, hybrid_locomotion=True)
+    parser.set_defaults(loco_imu_yaw_enabled=True, hybrid_locomotion=False)
     parser.add_argument("--loco-mode", type=int, default=1, help="SONIC planner mode when walking.")
     parser.add_argument(
         "--head-height-squat",
