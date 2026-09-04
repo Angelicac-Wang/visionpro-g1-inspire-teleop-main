@@ -26,7 +26,8 @@ pip install -e "$INSPIRE_HAND_SDK_ROOT"
 Vision Pro: open **Tracking Streamer → Start** on the same Wi‑Fi as the PC.
 
 Operator keys (Terminal 3): **F** → **]** → **S** → **T** · **P** pause · **H** head zero · **o** stop  
-Details: [docs/OPERATIONS.md](docs/OPERATIONS.md)
+Project setup, design, and maintenance notes: [HANDOVER.md](docs/HANDOVER.md).
+Daily launch commands and troubleshooting: [OPERATIONS.md](docs/OPERATIONS.md).
 
 ---
 
@@ -121,6 +122,7 @@ Extra args (e.g. `--no-mujoco-fpv`, `--loco-max-speed 0.4`) go at the end of Ter
 | `bin/` | Implementation of `run_*.sh` |
 | `scripts/` | Python entry (`g1_avp_sonic_teleop.py`, etc.) |
 | `tools/` | `setup_sonic_sim_venv.sh`, scene generation |
+| `docs/HANDOVER.md` | Current setup, workflows, safety, controls, and troubleshooting |
 | `docs/ARCHITECTURE.md` | Module design |
 | `legacy/` | Old Isaac Sim stack — not used in the workflows above |
 

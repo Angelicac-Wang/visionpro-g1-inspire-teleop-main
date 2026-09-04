@@ -1,396 +1,299 @@
-# Operations guide
+# Vision Pro–G1 Teleoperation: Operations Runbook
 
-Copy-paste workflows for MuJoCo sim and real G1. All teleop sessions use the same calibration flow unless noted.
+This is the canonical copy-paste guide for daily operation. For installation, architecture, code ownership, and known limitations, see [`HANDOVER.md`](HANDOVER.md).
 
-**Calibration flow (every session):** **F → ] → S → T**
+All commands are run from the repository root on the Linux lab workstation. Replace `<VP>` with the Vision Pro IP address or Tracking Streamer room code.
 
-| Key | Action |
-|-----|--------|
-| **F** | CALIB_FULL — forearms forward, hold ~2 s |
-| **]** | ENGAGE policy (MuJoCo: press **9** in sim if robot floats) |
-| **S** | CALIB_SYNC — match arms to robot, hold ~2 s |
-| **T** | TELEOP — live control |
-| **H** | Re-zero head facing / squat height |
-| **P** | Pause teleop |
-| **o** / **O** | Stop bridge / emergency stop deploy |
+## 1. Every-session calibration
 
-**Before you start**
+In the AVP bridge terminal:
 
-```bash
-cd /path/to/visionpro-g1-inspire-teleop-main
-cp .env.example .env          # once; edit paths and NICs
-pip install -e .                # once
+```text
+F → ] → S → T
 ```
 
-Set in `.env` (see `.env.example`):
+- `F` — hold a forearms-forward L-shape for about two seconds; records head and wrist references.
+- `]` — engage the SONIC policy; wait until the robot is stable.
+- `S` — match the displayed robot arm pose and hold for about two seconds.
+- `T` — begin live teleoperation.
+- `H` — re-zero head facing and squat height.
+- `P` — pause or resume pose mapping.
+- `o` — stop and exit from the bridge terminal.
+- `O` — emergency stop from the SONIC deploy terminal.
 
-| Variable | When needed |
-|----------|-------------|
-| `SONIC_PYTHON` | Bridge Python with `pyzmq` |
-| `GR00T_ROOT` | SONIC deploy + sim |
-| `SONIC_NET_IF` | Real robot DDS NIC, e.g. `enp3s0` |
-| `INSPIRE_HAND_LEFT_IP` | Real Inspire left (default `192.168.123.210`) |
-| `INSPIRE_HAND_RIGHT_IP` | Real Inspire right (default `192.168.123.211`) |
-| `INSPIRE_HAND_DDS_NETWORK` | Same NIC as robot/hands, e.g. `enp3s0` |
+In MuJoCo, press `9` in the simulator window after `]` if the robot remains suspended by the elastic band.
 
-Deploy must publish `g1_debug` on port **5557** (sync + IMU locomotion).
+## 2. MuJoCo whole-body teleoperation
 
-`run_*.sh` and `bin/*.sh` are identical wrappers.
+Start three terminals in order.
 
----
-
-## Locomotion modes (pick one)
-
-Both modes enable **head locomotion** by default (`--head-locomotion`). The only difference is whether keyboard walk keys are layered on top.
-
-| Mode | Flag | How you walk |
-|------|------|--------------|
-| **Pure head** (default) | *(none — default)* | Head lean / turn only; keyboard walk keys ignored |
-| **Hybrid** | `--hybrid-locomotion` | Head walk + keyboard overlay; keyboard wins while held |
-
-**Hybrid rules**
-
-- Click the **teleop terminal** so key presses reach the bridge.
-- **Hold** a key to move; **release** to coast to a stop.
-- **Fully stop** before reversing direction or spot-turning.
-- **Space** stops immediately and **keeps current body facing**.
-
-| Key (hybrid, hold) | Action |
-|--------------------|--------|
-| **W** | Walk forward (body facing direction) |
-| **S** | Walk backward (moonwalk — facing stays forward) |
-| **,** | Strafe left |
-| **.** | Strafe right |
-| **A** / **D** | Spot turn (only while fully stopped) |
-| **space** / **r** | Stop — decelerate, keep facing |
-| **H** | Re-zero head facing / squat height |
-
-**Head-walk tips (both modes)**
-
-- Press **H** before walking if facing feels wrong.
-- At **F**, face the same direction you want the robot to face.
-- When backing up, avoid turning your head to look behind — that drifts `facing`.
-
----
-
-## A — MuJoCo sim (walk only)
-
-### Terminal layout
-
-| Terminal | Command |
-|----------|---------|
-| 1 — Sim | `./run_sonic_sim_loop.sh` |
-| 2 — Deploy | `./run_sonic_deploy.sh` |
-| 3 — Teleop | see **Pure head** or **Hybrid** below |
-
-Replace `<VP_IP>` with Vision Pro IP or room code (e.g. `192.168.2.14`).
-
-### A1 — Sim teleop (default: pure head + Inspire finger sim)
+Terminal 1:
 
 ```bash
-# Terminal 1
 ./run_sonic_sim_loop.sh
-
-# Terminal 2
-./run_sonic_deploy.sh
-
-# Terminal 3
-./run_sonic_avp_teleop.sh <VP_IP>
 ```
 
-Built-in defaults (no extra flags needed):
-
-- Pure head locomotion (`--no-hybrid-locomotion`)
-- MuJoCo Inspire finger sim (`--enable-inspire-hand-sim`)
-- Left arm: `--left-hand-delta-remap identity`, `--left-wrist-orientation-mode calibrated`, `--left-wrist-axis-remap avp-palm-left`, `--left-wrist-rot-sign-y 1.0`
-
-### A2 — Hybrid head + keyboard (sim)
+Terminal 2:
 
 ```bash
-# Terminal 1
-./run_sonic_sim_loop.sh
-
-# Terminal 2
 ./run_sonic_deploy.sh
-
-# Terminal 3
-./run_sonic_avp_teleop.sh <VP_IP> --hybrid-locomotion
 ```
 
-Focus Terminal 3 before using **W/A/S/D**.
-
----
-
-## B — MuJoCo pick-up (walk + sim Inspire fingers)
-
-Same locomotion choice as A; pick script adds `--enable-inspire-hand-sim` automatically. Pinch in AVP to close fingers in sim.
-
-### B1 — Pure head (sim pick-up)
+Terminal 3:
 
 ```bash
-# Terminal 1
+./run_sonic_avp_teleop.sh <VP>
+```
+
+Complete `F → ] → S → T`.
+
+The experimental MuJoCo first-person stream starts by default but is not reliably visible inside Vision Pro. Disable it when unnecessary:
+
+```bash
+./run_sonic_avp_teleop.sh <VP> --no-mujoco-fpv
+```
+
+## 3. MuJoCo pick-and-place
+
+Terminal 1:
+
+```bash
 ./run_sonic_sim_loop_pnp.sh
+```
 
-# Terminal 2
+Terminal 2:
+
+```bash
 ./run_sonic_deploy.sh
-
-# Terminal 3
-./run_sonic_avp_teleop_pick.sh <VP_IP> --no-hybrid-locomotion
 ```
 
-### B2 — Hybrid (sim pick-up, default)
+Terminal 3:
 
 ```bash
-# Terminal 1
-./run_sonic_sim_loop_pnp.sh
-
-# Terminal 2
-./run_sonic_deploy.sh
-
-# Terminal 3
-./run_sonic_avp_teleop_pick.sh <VP_IP>
+./run_sonic_avp_teleop_pick.sh <VP>
 ```
 
----
+Complete `F → ] → S → T`. Pinching in Vision Pro closes the simulated Inspire fingers.
 
-## C — Real robot (full stack)
-
-Real robot needs **no MuJoCo FPV**, robot network on `SONIC_NET_IF`, and (for fingers) Inspire hand drivers on a separate terminal.
-
-### C0 — Pre-flight checks
-
-**Before `./run_sonic_deploy.sh real`**, put the G1 in low-level-ready state:
-
-1. **Hoist** the robot (feet off ground initially).
-2. Power on → wait for **zero-torque mode** (joints free when pushed by hand).
-3. On the **Unitree remote**: press **L2 + R2** (repeat if needed) → **debug mode** (yellow LED, joints in damping).
-4. PC Ethernet to robot on `192.168.123.x` via your NIC (e.g. `enp3s0`).
-
-If deploy prints **`Failed to switch to Release Mode`** in a loop, the built-in sport/motion service is still running. Re-do step 3, or **reboot the robot** and enter debug mode again before restarting deploy.
+Keyboard hybrid locomotion is not enabled automatically. To use it:
 
 ```bash
-# Load env
-source .env
-
-# Robot NIC (adjust name)
-ip -4 addr show enp3s0
-
-# Inspire hands on 192.168.123.x — both must reply before starting drivers
-ping -c 2 192.168.123.210    # left
-ping -c 2 192.168.123.211    # right
+./run_sonic_avp_teleop_pick.sh <VP> --hybrid-locomotion
 ```
 
-Green LED on Inspire = power only, not network. Each hand needs its own Ethernet to `192.168.123.x`.
+## 4. Real G1 preflight
 
-If ping fails, fix cabling/IP before `./run_both_hand_driver.sh`.
+> Keep the robot hoisted for initial engagement. Clear people and equipment from its reachable area, and keep the Unitree remote ready.
 
-### C1 — Arms + walk only (no physical hands)
+Before running SONIC:
+
+1. Connect the workstation Ethernet interface to the `192.168.123.x` robot network.
+2. Confirm `.env` contains the correct `SONIC_NET_IF`, such as `enp3s0`.
+3. Hoist the G1 with its feet initially off the ground.
+4. Power on and wait for zero-torque mode; joints should move freely by hand.
+5. Press `L2+R2` on the Unitree remote until the robot enters debug mode with the yellow LED and damping behavior.
+6. Confirm no person is within arm or leg reach.
+
+If deploy repeatedly reports `Failed to switch to Release Mode`, the sport controller is still active. Re-enter debug mode or reboot the robot and repeat the preflight.
+
+## 5. Real G1 without physical finger control
+
+Terminal 1:
 
 ```bash
-# Terminal 1 — deploy on robot network
 ./run_sonic_deploy.sh real
-
-# Terminal 2 — teleop (default: pure head)
-./run_sonic_avp_teleop.sh <VP_IP> --no-mujoco-fpv
-
-# Terminal 2 — teleop (hybrid keyboard overlay)
-./run_sonic_avp_teleop.sh <VP_IP> --no-mujoco-fpv --hybrid-locomotion
 ```
 
-Use **one** Terminal 2 command, not both.
-
-### C2 — Full teleop (walk + real Inspire hands)
-
-Four terminals:
+Terminal 2:
 
 ```bash
-# Terminal 1 — SONIC policy on real G1
-./run_sonic_deploy.sh real
+./run_sonic_avp_teleop.sh <VP> --no-mujoco-fpv
+```
 
-# Terminal 2 — Inspire Modbus → DDS (both hands)
+For keyboard-assisted positioning:
+
+```bash
+./run_sonic_avp_teleop.sh <VP> \
+  --no-mujoco-fpv \
+  --hybrid-locomotion
+```
+
+Complete `F → ] → S → T` slowly and verify stability after every stage.
+
+## 6. Real G1 with both Inspire Hands
+
+Check both hands before starting:
+
+```bash
+ping -c 2 192.168.123.210
+ping -c 2 192.168.123.211
+```
+
+Terminal 1:
+
+```bash
+./run_sonic_deploy.sh real
+```
+
+Terminal 2:
+
+```bash
 ./run_both_hand_driver.sh --dds-network enp3s0
+```
 
-# Terminal 3 — AVP bridge, hybrid keyboard walk (recommended on real robot)
-./run_sonic_avp_teleop.sh <VP_IP> \
-  --no-mujoco-fpv \
-  --hybrid-locomotion \
-  --enable-inspire-hand-dds \
-  --hand-dds-sides both \
-  --hand-dds-network enp3s0
+Terminal 3:
 
-# Terminal 3 — pure head only (no keyboard walk)
-./run_sonic_avp_teleop.sh <VP_IP> \
+```bash
+./run_sonic_avp_teleop.sh <VP> \
   --no-mujoco-fpv \
   --enable-inspire-hand-dds \
   --hand-dds-sides both \
   --hand-dds-network enp3s0
 ```
 
-Use **one** Terminal 3 command. `--hand-dds-network` should match `INSPIRE_HAND_DDS_NETWORK` in `.env`.
+Add `--hybrid-locomotion` to the Terminal 3 command when keyboard positioning is needed.
 
-**Single hand only**
+For one physical hand only:
 
 ```bash
+# Left hand driver
 ./run_both_hand_driver.sh --sides l --dds-network enp3s0
-# teleop: --hand-dds-sides l
+
+# Add to the teleop command
+--enable-inspire-hand-dds --hand-dds-sides l --hand-dds-network enp3s0
 ```
 
-**Custom hand IPs**
+Hand-driver frequency output confirms Modbus communication with the hand. It does not prove that DDS commands are arriving from the bridge.
 
-```bash
-./run_both_hand_driver.sh \
-  --left-ip 192.168.123.210 \
-  --right-ip 192.168.123.211 \
-  --dds-network enp3s0
+## 7. Hybrid keyboard locomotion
+
+Enable:
+
+```text
+--hybrid-locomotion
 ```
 
-Driver Hz logs mean Modbus is up; they do **not** prove DDS commands from teleop are arriving.
+After reaching `T`, focus the bridge terminal and hold:
 
----
+- `W` — walk forward;
+- `S` — walk backward while preserving facing;
+- `,` / `.` — strafe left/right;
+- `A` / `D` or `j` / `l` — turn in place;
+- `space` or `r` — stop while preserving facing.
 
-## Optional flags (append to Terminal 3)
+Come to a complete stop before reversing or turning in place. Before `T`, `S` means arm synchronization rather than backward walking.
 
-Add flags **after** `<VP_IP>` on the same line. Examples below use hybrid sim; same flags work on real robot after `--no-mujoco-fpv`.
+## 8. Common bridge options
 
-### Locomotion tuning
+Append options after `<VP>`:
 
 ```bash
-# Softer facing / less IMU fighting (if walk direction drifts)
---loco-facing-smooth 0.12 \
---loco-yaw-deadzone 0.20
-
-# Disable IMU yaw closed-loop (debug / ablation)
---no-loco-imu-correction
-
-# Speed and smoothing
---loco-max-speed 0.50 \
---loco-smooth 0.18 \
---loco-velocity-deadzone 0.06
-
-# Hybrid keyboard walk speed only
---keyboard-loco-speed 0.42
+./run_sonic_avp_teleop.sh <VP> [OPTIONS]
 ```
 
-### Arm tracking loss (default ON)
+- `--hybrid-locomotion` — enable keyboard/head locomotion together.
+- `--no-mujoco-fpv` — disable the experimental first-person video path.
+- `--loco-max-speed 0.4` — reduce maximum walking speed.
+- `--no-loco-imu-correction` — disable base-IMU yaw correction for diagnosis.
+- `--active-hands right` — ignore left-arm input.
+- `--left-wrist-orientation-mode neutral` — diagnostic fallback for left-arm hunching.
+- `--enable-inspire-hand-dds` — publish physical Inspire Hand commands.
+- `--hand-dds-sides both` — select both hand DDS topics.
+- `--hand-dds-network enp3s0` — select the hand DDS interface.
+- `--print-debug` — print command and tracking state; standard wrappers already enable it.
 
-When a wrist leaves the AVP field of view, the bridge **holds the last valid arm target** instead of snapping back to the L init pose. Tracking recovery is smoothed by the existing arm ramp (`--vr-ramp-max-speed`, `--arm-max-angular-speed`).
+Defaults in the standard wrapper:
 
-```bash
-# Default — no flag needed
---arm-tracking-hold
+- head locomotion and squat control: on;
+- staged calibration: on;
+- arm tracking-loss hold: on;
+- IMU yaw correction: on;
+- keyboard hybrid mode: off;
+- command publish rate: 50 Hz.
 
-# Legacy snap-to-init when tracking is lost
---no-arm-tracking-hold
-```
+## 9. Normal shutdown and emergency stop
 
-Debug: with `--print-debug`, look for `arm_hold= {'left_hold': True, ...}`.
+Normal shutdown:
 
-### Left arm hunching (tracking active)
+1. Press `o` in the bridge terminal and confirm it exits.
+2. Stop the hand drivers with `Ctrl+C`.
+3. Stop SONIC deploy.
+4. Stop MuJoCo if running.
 
-Left wrist **orientation** can pull the whole upper body when using `calibrated` mode. If the torso hunches while the left hand moves, try decoupling wrist rotation from the policy:
+Unexpected real-robot movement:
 
-```bash
+1. Press `O` in the SONIC deploy terminal immediately.
+2. Use the Unitree remote emergency control if required.
+3. Do not restart until the cause is understood.
+
+Do not rely on closing a terminal window as the primary emergency-stop method.
+
+## 10. Troubleshooting
+
+### CALIB_SYNC fails
+
+- Confirm SONIC deploy is running.
+- Confirm SONIC feedback is available on ZMQ port `5557`.
+- Restart the bridge and repeat `F → ] → S → T`.
+
+### Robot does not walk
+
+- Confirm live teleoperation has reached `T`.
+- Press `H` to re-zero facing.
+- Check bridge debug output for nonzero movement and speed.
+- For keyboard control, confirm `--hybrid-locomotion` was passed.
+
+### Walking direction or facing drifts
+
+- Face the intended neutral direction and press `H`.
+- Repeat `F` if needed.
+- Confirm base-IMU feedback is reaching the bridge.
+
+### Arms move suddenly when the policy starts
+
+- Start the bridge before pressing `]`.
+- Complete `F` so the initialized arm targets are buffered.
+- Do not skip `S`.
+
+### A wrist disappears and the arm moves incorrectly
+
+- Confirm arm tracking hold has not been disabled.
+- Pause with `P` if tracking does not recover.
+
+### Left arm pulls the torso or hunches
+
+Try one diagnostic change at a time:
+
+```text
+--active-hands right
 --left-wrist-orientation-mode neutral
 ```
 
-Re-enable calibrated palm control once reach mapping is tuned:
+Also recheck the synchronized pose at `S`.
 
-```bash
---left-wrist-orientation-mode calibrated \
---left-wrist-axis-remap avp-palm-left \
---left-wrist-rot-sign-y 1.0
+### Physical fingers do not move
+
+- Ping both hand IPs.
+- Confirm the hand drivers are running.
+- Confirm all Inspire DDS flags are present in the bridge command.
+- Use the same network interface for the bridge and drivers.
+
+### Python import or ZMQ error
+
+- Confirm `SONIC_PYTHON` points to the intended environment.
+- Run `"$SONIC_PYTHON" -m pip install -e .`.
+- Verify `"$SONIC_PYTHON" -c "import zmq"` succeeds.
+
+### SONIC cannot find the real robot
+
+- Confirm the workstation is on `192.168.123.x`.
+- Check `SONIC_NET_IF`.
+- Confirm the G1 is in debug mode.
+
+### MuJoCo waits for camera frames
+
+Start the standard MuJoCo loop or disable video with:
+
+```text
+--no-mujoco-fpv
 ```
-
-Track **right hand only** while debugging left mapping:
-
-```bash
---active-hands right
-```
-
-### Squat / head height
-
-Enabled by default in `g1_avp_sonic_teleop.py`. To disable:
-
-```bash
---no-head-height-squat
-```
-
-### Debug logging
-
-```bash
---print-debug    # already added by run_sonic_avp_teleop.sh; safe to repeat
-```
-
-### Left wrist (if left palm / reach needs tuning)
-
-Defaults are set in code; override only when needed:
-
-```bash
---left-wrist-orientation-mode calibrated \
---left-wrist-axis-remap avp-palm-left \
---left-wrist-rot-sign-y 1.0
-```
-
-### Eval / corridor (optional)
-
-See [EXPERIMENT_TASK_A.md](EXPERIMENT_TASK_A.md).
-
-Full flag list:
-
-```bash
-python scripts/g1_avp_sonic_teleop.py --help
-```
-
----
-
-## Example: one-liner reference
-
-**Sim hybrid (keyboard overlay)**
-
-```bash
-./run_sonic_sim_loop.sh          # T1
-./run_sonic_deploy.sh            # T2
-./run_sonic_avp_teleop.sh 192.168.2.14 --hybrid-locomotion   # T3
-```
-
-**Sim default (pure head — same as your tuned preset)**
-
-```bash
-./run_sonic_avp_teleop.sh 192.168.2.14
-```
-
-**Real robot + hands + hybrid**
-
-```bash
-./run_sonic_deploy.sh real                                              # T1
-./run_both_hand_driver.sh --dds-network enp3s0                          # T2
-./run_sonic_avp_teleop.sh 192.168.2.14 --no-mujoco-fpv \
-  --enable-inspire-hand-dds --hand-dds-sides both --hand-dds-network enp3s0   # T3
-```
-
-**Real robot facing drift workaround**
-
-```bash
-./run_sonic_avp_teleop.sh <VP_IP> --no-mujoco-fpv \
-  --loco-facing-smooth 0.12 --loco-yaw-deadzone 0.20
-```
-
----
-
-## Troubleshooting
-
-| Issue | Fix |
-|-------|-----|
-| CALIB_SYNC fails | Deploy running? `g1_debug` on `:5557`? |
-| Walk direction wrong / facing drifts | Press **H**; recalibrate **F** with head forward; try `--loco-facing-smooth 0.12` |
-| Back then forward goes sideways | Don't turn head while backing up; press **H** before next walk |
-| Keyboard does nothing | Focus teleop terminal; finish **T** first; hybrid must be on (no `--no-hybrid-locomotion`) |
-| **S** triggers sync during teleop | Update bridge — teleop **S** is backward walk only in hybrid mode |
-| Robot arms snap down before **]** | Start teleop **before** **]** so init pose streams |
-| Hand lost → body snaps / hunches | Default `--arm-tracking-hold` holds last pose; use `--no-hybrid-locomotion` for stable walk |
-| Left arm pulls torso / hunch | Try `--left-wrist-orientation-mode neutral` or `--active-hands right` while tuning |
-| Driver runs but fingers don't move | Teleop needs `--enable-inspire-hand-dds --hand-dds-sides both --hand-dds-network enp3s0` |
-| Import / ZMQ errors | `pip install -e .`; set `SONIC_PYTHON` in `.env` |
-| Deploy can't find robot | Set `SONIC_NET_IF=enp3s0` in `.env` |
-
-Legacy Isaac Sim notes: [legacy/command.txt](../legacy/command.txt) (outdated — use workflows A/B/C above).
