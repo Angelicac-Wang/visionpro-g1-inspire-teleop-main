@@ -28,7 +28,7 @@ def main() -> None:
         argv.append("--enable-mujoco-fpv")
     if (
         "--enable-inspire-hand-sim" not in argv
-        and "--no-mujoco-fpv" not in argv
+        and "--no-inspire-hand-sim" not in argv
     ):
         argv.append("--enable-inspire-hand-sim")
     if "--hybrid-smoothing-tau" not in argv:

@@ -51,6 +51,10 @@ Same as before — three terminals:
 MuJoCo tip: after **]**, press **9** in the sim window if the robot hangs in the air.  
 MuJoCo FPV in the headset is **on by default** (sim camera → Vision Pro).
 
+On Jetson, use `./solo_teleop.sh <VISION_PRO_IP> --no-mujoco-fpv` with sim/deploy
+already running to operate without headset video. Simulated fingers remain enabled;
+`--no-inspire-hand-sim` disables them independently.
+
 ---
 
 ## Workflow B — MuJoCo sim pick-up (walk + hands + **simulated Inspire fingers**)
@@ -81,12 +85,14 @@ Two terminals only:
 ./run_sonic_deploy.sh real
 
 # Terminal 2
-./run_sonic_avp_teleop.sh <VISION_PRO_IP> --no-mujoco-fpv
+./run_sonic_avp_teleop.sh <VISION_PRO_IP> --no-mujoco-fpv --no-inspire-hand-sim
 # example:
-./run_sonic_avp_teleop.sh 192.168.2.14 --no-mujoco-fpv
+./run_sonic_avp_teleop.sh 192.168.2.14 --no-mujoco-fpv --no-inspire-hand-sim
 ```
 
 `--no-mujoco-fpv` turns off sim camera streaming (there is no MuJoCo on real hardware).  
+`--no-inspire-hand-sim` separately turns off simulated finger commands.
+
 Physical Inspire hand on the robot uses a separate DDS driver — not covered in these three workflows.
 
 ---

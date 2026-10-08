@@ -1,0 +1,28 @@
+diff --git a/gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/input_interface/zmq_manager.hpp b/gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/input_interface/zmq_manager.hpp
+index 6917e59..9b308ae 100644
+--- a/gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/input_interface/zmq_manager.hpp
++++ b/gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/input_interface/zmq_manager.hpp
+@@ -649,11 +649,19 @@ class ZMQManager : public InputInterface {
+         }
+       }
+
+-      if (has_vr_3point_control_ && !last_has_vr_3point_control_) {
+-        std::cout << "[ZMQManager] VR 3-point control enabled" << std::endl;
++      if (has_vr_3point_control_) {
++        if (!last_has_vr_3point_control_) {
++          std::cout << "[ZMQManager] VR 3-point control enabled" << std::endl;
++        }
++        // VR targets may arrive before ENGAGE, while current_motion still
++        // points at a reference motion. Planner initialization then selects a
++        // different motion with encoder mode 0. Keep the active motion in
++        // teleop mode even when VR availability has not changed.
+         std::lock_guard<std::mutex> lock(current_motion_mutex);
+-        if (current_motion->GetEncodeMode() >= 0) {
+-              current_motion->SetEncodeMode(1);
++        if (current_motion->GetEncodeMode() >= 0 && current_motion->GetEncodeMode() != 1) {
++          current_motion->SetEncodeMode(1);
++          std::cout << "[ZMQManager] Restored teleop encoder mode for "
++                    << current_motion->name << std::endl;
+         }
+       }
+       else if (!has_vr_3point_control_ && last_has_vr_3point_control_) {

@@ -9,6 +9,7 @@ sim<->deploy DDS on some setups. BaseSimulator's init is sufficient.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import gear_sonic.scripts.run_sim_loop as run_sim_loop
 import gear_sonic.utils.mujoco_sim.simulator_factory as simulator_factory
@@ -44,6 +45,16 @@ def _patch_robot_scene_loader() -> None:
 
 
 def main() -> None:
+    if os.environ.get("SONIC_HAND_MODEL", "inspire") == "inspire":
+        scene = Path(__file__).resolve().parents[1] / "assets/mujoco/g1_runtime/scene_inspire_hand.xml"
+        if not scene.is_file():
+            from setup_inspire_sim import setup
+
+            setup()
+        os.environ.setdefault("SONIC_ROBOT_SCENE", str(scene))
+        from g1_teleop.sim.inspire_hand import install_inspire_sim
+
+        install_inspire_sim(os.environ.get("SONIC_HAND_ENDPOINT", "tcp://127.0.0.1:5556"))
     _patch_robot_scene_loader()
     simulator_factory.init_channel = lambda config: None  # noqa: ARG005
     config = tyro.cli(SimLoopConfig)

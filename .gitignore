@@ -12,5 +12,6 @@ scripts/visionpro_left_hand_calibration.json
 visionpro_left_hand_calibration.json
 assets/mujoco/g1_runtime/
 assets/mujoco/generated/
+assets/mujoco/inspire_ftp/
 recordings/
-
+MUJOCO_LOG.TXT

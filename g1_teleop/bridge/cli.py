@@ -476,11 +476,19 @@ def parse_args():
     parser.add_argument("--left-fallback-y", type=float, default=0.25)
     parser.add_argument("--right-fallback-y", type=float, default=-0.25)
     parser.add_argument("--print-debug", action="store_true")
-    parser.add_argument(
+    hand_sim_group = parser.add_mutually_exclusive_group()
+    hand_sim_group.add_argument(
         "--enable-inspire-hand-sim",
         action="store_true",
         help="Also publish AVP finger tracking as sim-only Inspire hand ZMQ commands.",
     )
+    hand_sim_group.add_argument(
+        "--no-inspire-hand-sim",
+        dest="enable_inspire_hand_sim",
+        action="store_false",
+        help="Disable simulated Inspire finger commands independently of MuJoCo FPV video.",
+    )
+    parser.set_defaults(enable_inspire_hand_sim=False)
     parser.add_argument(
         "--enable-inspire-hand-dds",
         action="store_true",

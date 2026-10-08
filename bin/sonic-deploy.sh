@@ -94,7 +94,7 @@ OUTPUT_TYPE="all"
 ZMQ_HOST="localhost"
 
 if [[ "${TARGET_MODE}" == "sim" ]]; then
-  NET_IF="lo"
+  NET_IF="${SONIC_SIM_NET_IF:-lo}"
   EXTRA=(--disable-crc-check)
 else
   NET_IF="${SONIC_NET_IF:-}"
