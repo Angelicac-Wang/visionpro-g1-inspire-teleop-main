@@ -6,6 +6,20 @@ All commands are run from the repository root on the Linux lab workstation. Repl
 
 ## Jetson AGX Orin checkpoint — 2026-10-08
 
+### 最新保存状态与 2026-10-09 复测
+
+四指仿真映射已经修正，29 项自动测试通过。回放同一组手指弯曲数据
+`[65.4, 73.8, 75.0, 69.8]`，原指令为 `[664, 602, 593, 631]`，
+修复后为 `[13, 0, 0, 0]`（0 为闭合，1000 为张开）；该指令也已通过
+独立 MuJoCo 四指闭合验证。尚未确认操作者重启桥接后的现场效果。
+
+明天按下面三个终端的顺序启动，完成自动校准，再分别测试左右手张开和
+握拳，各保持 3 秒。确认四指既能闭合也能重新张开。检查桥接启动日志中的
+`using sim finger flexion range 10-70 degrees`（已有个人校准文件时使用该文件）。
+本次修复只改变无个人校准文件时的仿真四指默认范围，拇指仍待单独校准；
+跟踪值间歇归零的原因以及头显画面是否稳定，继续现场检查。无需重新编译
+SONIC，也无需重新下载模型。
+
 本次进度已保存，回来后按以下顺序启动。当前网络记录：Jetson
 `192.168.2.22`，Vision Pro `192.168.2.5`；地址变化时替换命令中的 IP。
 三个终端均先进入 `~/projects/visionpro-g1-inspire-teleop-main`。
@@ -368,6 +382,18 @@ GR00T body model and its camera are retained; the Dex3 palms/fingers are replace
 If fingers move but cannot fully close, run a separate open/fist calibration;
 `F → ] → S → T` calibrates head/wrists, not finger ranges. The per-hand calibration
 JSON files are ignored by Git and must be copied or regenerated on a new machine.
+
+2026-10-08 follow-up: when only simulated hands are enabled and no personal
+calibration file exists, the four fingers now use 10° open / 70° closed. The
+measured flexion is a weighted mean of joint angles; recorded closed-fist values
+were around 65–75°, so the legacy 165° endpoint left commands near half closure.
+This is a fallback based on the observed session, not a completed personal
+calibration. Personal files override it, and physical DDS output (including mixed
+sim/DDS mode) retains the previous ranges. Thumb ranges are unchanged and still
+require calibration. Restart the AVP bridge to load this change; the simulator
+and deploy do not need rebuilding. Repeat the automatic calibration workflow;
+if the robot is already standing on the ground, acknowledge the drop prompt with
+Enter without toggling the suspension again with `9`.
 
 ### Physical Inspire fingers do not move
 

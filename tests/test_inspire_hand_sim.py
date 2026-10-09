@@ -100,6 +100,25 @@ def test_both_hands_close_and_reopen(hand):
         np.testing.assert_allclose(data.qpos[model.jnt_qposadr[active]], 0, atol=0.06)
 
 
+def test_captured_fist_mapping_reaches_sim_finger_limits(hand, monkeypatch, tmp_path):
+    import sys
+    from g1_teleop.bridge.cli import parse_args
+    from g1_teleop.hand.mapping import InspireHandMapper
+
+    monkeypatch.setattr(sys, "argv", ["bridge", "--enable-inspire-hand-sim"])
+    mapper = InspireHandMapper.from_args(parse_args(), tmp_path / "missing.json")
+    raw = dict(little=65.4, ring=73.8, middle=75.0, index=69.8,
+               thumb_bend=23.8, thumb_rot=10.279)
+    monkeypatch.setattr(mapper, "measure_raw", lambda hand: (raw, {}))
+    command, _ = mapper.build_command(None)
+    model, data, controller = hand
+    advance(model, data, controller, packet(command, command))
+    for active in controller.active.values():
+        fingers = active[:4]
+        np.testing.assert_allclose(data.qpos[model.jnt_qposadr[fingers]],
+                                   model.jnt_range[fingers, 1], atol=0.08)
+
+
 def test_timeout_opens_fingers(hand):
     _, _, controller = hand
     controller.receive(packet([0] * 6, [0] * 6), 10.0)

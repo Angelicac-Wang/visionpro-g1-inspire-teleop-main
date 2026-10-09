@@ -54,6 +54,14 @@ DEFAULT_CALIBRATION = {
     "thumb_rot": {"open": 90.0, "close": 165.0},
 }
 
+# The flexion metric is a weighted mean of MCP/PIP/DIP angles, not their
+# sum. In the AGX/AVP capture, a closed fist measured about 65-75 degrees;
+# the legacy 165-degree endpoint only produced roughly half closure.
+# Apply this fallback to simulation only. Personal calibration takes priority.
+SIM_FINGER_CALIBRATION = {
+    finger: {"open": 10.0, "close": 70.0} for finger in FINGER_ORDER
+}
+
 
 def _point(transform):
     return np.asarray(transform, dtype=np.float64)[:3, 3]
@@ -193,11 +201,24 @@ class InspireHandMapper:
             path = getattr(args, "hand_calibration_file", None)
         if path and os.path.exists(path):
             calibration = HandCalibration.load(path)
-        elif args.thumb_rotation_metric == "distance":
-            calibration.channels["thumb_rot"] = {
-                "open": float(args.thumb_open_distance),
-                "close": float(args.thumb_close_distance),
-            }
+        else:
+            sim_only = getattr(args, "enable_inspire_hand_sim", False) and not getattr(
+                args, "enable_inspire_hand_dds", False
+            )
+            if sim_only:
+                calibration.channels.update({
+                    finger: dict(values) for finger, values in SIM_FINGER_CALIBRATION.items()
+                })
+                print(
+                    "[inspire_hand] No personal hand calibration; using sim finger "
+                    "flexion range 10-70 degrees. Thumb ranges still need open/fist calibration.",
+                    flush=True,
+                )
+            if args.thumb_rotation_metric == "distance":
+                calibration.channels["thumb_rot"] = {
+                    "open": float(args.thumb_open_distance),
+                    "close": float(args.thumb_close_distance),
+                }
         return cls(args, calibration)
 
     def reset(self):
